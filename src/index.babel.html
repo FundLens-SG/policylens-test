@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="browsermode" content="application">
 <title>PolicyLens</title>
 <script>window.onerror=function(m,s){if(!s||m==='Script error.')return true;return false};window.onunhandledrejection=function(e){if(!e||!e.reason)return;var r=String(e.reason);if(r==='Script error.')e.preventDefault();};
@@ -317,7 +317,7 @@ label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;lett
 /* ══════ TOAST NOTIFICATIONS ══════ */
 @keyframes toastIn{from{opacity:0;transform:translateY(16px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes toastOut{from{opacity:1;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(-8px) scale(.95)}}
-.toast-container{position:fixed;bottom:72px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;max-width:min(420px,90vw)}
+.toast-container{position:fixed;bottom:calc(72px + env(safe-area-inset-bottom, 0px));left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;max-width:min(420px,90vw)}
 .toast{pointer-events:auto;padding:10px 16px;border-radius:10px;font-size:12px;font-weight:500;line-height:1.4;box-shadow:0 8px 24px rgba(0,0,0,.35);animation:toastIn .25s ease-out;display:flex;align-items:center;gap:8px;backdrop-filter:blur(12px)}
 .toast.exiting{animation:toastOut .2s ease-in forwards}
 .toast-success{background:rgba(91,168,160,.15);border:1px solid rgba(91,168,160,.3);color:var(--green2)}
@@ -363,6 +363,34 @@ label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;lett
   .resp-2col,.resp-5col,.resp-side{grid-template-columns:1fr!important}
 }
 
+/* ══════ TOUCH TAP TARGETS (v2.4.0-rc1.85) ══════
+   Coarse-pointer devices (phone + tablet) get a 44×44 logical hit area
+   on small chips and icon buttons. We DON'T inflate the visible chip
+   size — `position:relative` + an `::after` overlay extends the touchable
+   region. Skips selectors that already have explicit tap-friendly sizing
+   (>=36px height) to avoid breaking flex layouts. */
+@media (pointer: coarse) {
+  /* Chip-style buttons that render under 36px tall — pad the hit area.
+     The button still LOOKS its original size; the invisible ::after just
+     widens what counts as a tap. */
+  button[style*="borderRadius:999"]:not([style*="height:32"]):not([style*="height:36"]):not([style*="height:40"]):not([style*="height:42"]):not([style*="height:44"]) {
+    position: relative;
+  }
+  button[style*="borderRadius:999"]:not([style*="height:32"]):not([style*="height:36"]):not([style*="height:40"]):not([style*="height:42"]):not([style*="height:44"])::after {
+    content: "";
+    position: absolute;
+    inset: -8px;
+    min-width: 44px;
+    min-height: 44px;
+    /* Keep transparent so the visual chip is unchanged. */
+  }
+  /* Tiny ✕ / × close buttons commonly render at 18px — give them a
+     real tap target without changing the visible glyph size. */
+  .btn-sm, .btn-danger.btn-sm {
+    min-height: 36px;
+  }
+}
+
 /* ══════ AUTH LOADING (v2.1.0i) ══════ */
 #auth-loading{position:fixed;inset:0;z-index:10001;background:var(--bg);display:flex;align-items:center;justify-content:center}
 @keyframes plPulse{0%,100%{opacity:.6}50%{opacity:1}}
@@ -396,14 +424,21 @@ label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;lett
    shared chrome. ====================================================== */
 :root { --ckg-strip-h: 36px; }
 @media (max-width: 640px) { :root { --ckg-strip-h: 44px; } }
-body { padding-top: var(--ckg-strip-h) !important; }
+/* v2.4.0-rc1.85: iPhone notch / Dynamic Island safe-area support.
+   The fixed-position CKG strip extends into the unsafe area at the
+   top of the viewport (under the notch), so we pad its TOP by
+   env(safe-area-inset-top) and grow the body's padding-top to match.
+   Falls back to 0 on devices without a notch. */
+body { padding-top: calc(var(--ckg-strip-h) + env(safe-area-inset-top, 0px)) !important; }
 .ckg-suite-strip {
   position: fixed; top: 0; left: 0; right: 0;
-  height: var(--ckg-strip-h);
+  height: calc(var(--ckg-strip-h) + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
   background: #0a0a0a;
   border-bottom: 1px solid rgba(214, 168, 122, 0.18);
   display: flex; align-items: center;
-  padding: 0 14px;
+  padding-left: calc(14px + env(safe-area-inset-left, 0px));
+  padding-right: calc(14px + env(safe-area-inset-right, 0px));
   font-family: "Geist", "Inter", system-ui, -apple-system, sans-serif;
   z-index: 999999;
   box-sizing: border-box;
@@ -29754,27 +29789,33 @@ const OrientationLock = memo(function OrientationLock() {
   };
 
   const labels = {auto: 'AUTO', portrait: 'PORTRAIT', landscape: 'LANDSCAPE'};
-  const icons = {auto: '↻', portrait: '▯', landscape: '▭'};
+  // v2.4.0-rc1.85: text labels instead of glyph icons. The previous AUTO
+  // glyph (↻) read as "refresh" — users tapped it expecting a page reload.
+  // "AUTO/P/L" is unambiguous and self-describing.
+  const shortLabels = {auto: 'AUTO', portrait: 'P', landscape: 'L'};
   const colors = {auto: 'var(--text3)', portrait: 'var(--gold)', landscape: 'var(--gold)'};
 
   return (
     <button
       onClick={cycle}
-      title={`Orientation: ${labels[mode]} (tap to change)`}
+      title={`Orientation lock: ${labels[mode]} (tap to change)`}
       aria-label={`Orientation lock: ${labels[mode]}`}
       style={{
         position:'fixed',
-        bottom:14,
-        right:14,
+        // v2.4.0-rc1.85: respect iPhone home-indicator safe area
+        bottom:'calc(14px + env(safe-area-inset-bottom, 0px))',
+        right:'calc(14px + env(safe-area-inset-right, 0px))',
         zIndex:9997, // v2.3.0-rc2c.5q: raised to ensure visibility above other floating UI
-        width:42,
+        minWidth:42,
+        width: mode==='auto' ? 50 : 42,
         height:42,
-        borderRadius:'50%',
+        borderRadius:21,
         background:'var(--bg2)',
         border:`1.5px solid ${colors[mode]}`,
         color:colors[mode],
-        fontSize:18,
+        fontSize: mode==='auto' ? 9 : 16,
         fontWeight:700,
+        letterSpacing: mode==='auto' ? '0.05em' : '0',
         cursor:'pointer',
         boxShadow:'0 2px 10px rgba(0,0,0,.25)',
         display:'flex',
@@ -29782,10 +29823,10 @@ const OrientationLock = memo(function OrientationLock() {
         justifyContent:'center',
         padding:0,
         opacity:mode==='auto'?0.55:1,
-        transition:'opacity .2s, border-color .2s, color .2s'
+        transition:'opacity .2s, border-color .2s, color .2s, width .2s, font-size .2s'
       }}
     >
-      {icons[mode]}
+      {shortLabels[mode]}
     </button>
   );
 });
@@ -32084,18 +32125,28 @@ function Header() {
       </div>
 
       {/* Row 2: Tab bar — pill style, primary-fill active, ghost inactive */}
+      {/* v2.4.0-rc1.85: tab row scrolls horizontally on mobile (7 tabs
+          don't fit at <430px). Wrap in a relative container with a
+          right-edge gradient so users see there's more to swipe. */}
+      <div style={{ position: 'relative' }}>
       <div style={{
         display: 'flex', alignItems: 'center',
         padding: isMobile ? '0 8px 8px' : '0 18px 10px',
         gap: 4, overflowX: 'auto',
+        scrollbarWidth: 'none', msOverflowStyle: 'none',
       }}>
         {tabs.map(t => {
           const active = tab === t.id;
           return (
             <button key={t.id} onClick={() => setTab(t.id)}
               style={{
-                background: active ? T.primary : 'transparent',
-                color: active ? '#fff' : T.text2,
+                // v2.4.0-rc1.85: softer active pill — tinted primary background
+                // + primary text + thin underline accent instead of a solid
+                // fill. The previous heavy gold pill visually dominated the
+                // tab strip and made the other tabs feel inactive even when
+                // navigating between sections.
+                background: active ? T.primaryDim : 'transparent',
+                color: active ? T.primary : T.text2,
                 border: 'none',
                 padding: isMobile ? '6px 10px' : '8px 14px',
                 borderRadius: 999,
@@ -32107,6 +32158,7 @@ function Header() {
                 transition: T.motion ? 'all 180ms ease' : 'none',
                 whiteSpace: 'nowrap', flexShrink: 0,
                 position: 'relative',
+                boxShadow: active ? 'inset 0 -2px 0 0 ' + T.primary : 'none',
               }}
               onMouseEnter={(e) => { if (!active && T.motion) e.currentTarget.style.background = T.bg3; }}
               onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}>
@@ -32115,7 +32167,7 @@ function Header() {
               {t.id === 'policies' && policies.length > 0 && (
                 <span style={{
                   marginLeft: 2, padding: '1px 7px',
-                  background: active ? 'rgba(255,255,255,0.25)' : T.primaryDim,
+                  background: active ? T.primary : T.primaryDim,
                   color: active ? '#fff' : T.primary,
                   fontSize: 10, fontWeight: 700,
                   borderRadius: 999, lineHeight: 1.4,
@@ -32124,7 +32176,7 @@ function Header() {
               {t.id === 'review' && reviewQueueCount > 0 && (
                 <span style={{
                   marginLeft: 2, padding: '1px 7px',
-                  background: active ? 'rgba(255,255,255,0.25)' : 'color-mix(in oklch, var(--gold) 16%, transparent)',
+                  background: active ? 'var(--gold)' : 'color-mix(in oklch, var(--gold) 16%, transparent)',
                   color: active ? '#fff' : 'var(--gold)',
                   fontSize: 10, fontWeight: 700,
                   borderRadius: 999, lineHeight: 1.4,
@@ -32133,6 +32185,17 @@ function Header() {
             </button>
           );
         })}
+      </div>
+      {/* Right-edge fade signaling scrollable overflow. pointer-events:none
+          so the fade itself doesn't block taps on tabs underneath. Only
+          shown on mobile where the tab strip actually overflows. */}
+      {isMobile && (
+        <div aria-hidden="true" style={{
+          position: 'absolute', top: 0, right: 0, bottom: 0,
+          width: 28, pointerEvents: 'none',
+          background: 'linear-gradient(to right, transparent, ' + T.bg + ')',
+        }} />
+      )}
       </div>
     </div>
   );
@@ -32163,32 +32226,72 @@ function ClientContextHeader() {
       padding:'8px clamp(16px, 3vw, 24px)',
       fontFamily:T_V2.sansFamily
     }}>
+      {/* v2.4.0-rc1.85: header summary chips — tightened for mobile.
+          - "N active / N total" collapses to "N policies" when active == total
+          - Premium chip carries an explicit "Total premium" title + visible prefix
+          - "Review 0" hides entirely (no zero-state noise); only renders when count > 0
+          - "Profile" chip renamed "Edit profile" to disambiguate from the Profile tab
+          - "Synced" state shrinks to a small ✓ dot in the OK path so it doesn't
+            break the chip rhythm; failed/queued keep full labels because they're
+            actionable. */}
       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',maxWidth:1280,margin:'0 auto'}}>
         <div style={{minWidth:0,flex:'1 1 260px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
           <span style={{fontFamily:T_V2.serifFamily,fontSize:16,color:'var(--text)',fontWeight:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:260}}>{summary.clientName}</span>
           <span style={{fontSize:10,color:'var(--text3)',border:'1px solid var(--border)',background:'var(--bg2)',borderRadius:999,padding:'3px 8px',fontWeight:700}}>{summary.tier || 'Unassigned'}</span>
           <span style={{fontSize:11,color:'var(--text3)'}}>{ageLabel}</span>
+          {/* OK-path sync state collapses to a tiny ✓ dot next to the name so
+              it doesn't break the chip rhythm. Failed/queued render as full
+              chips below so they stay visible and actionable. */}
+          {summary.syncState === 'synced' && (
+            <span title={summary.lastSyncedAt ? ('Synced ' + summary.lastSyncedAt) : 'Synced'}
+              aria-label="Synced"
+              style={{
+                display:'inline-flex',alignItems:'center',justifyContent:'center',
+                width:18,height:18,borderRadius:'50%',
+                background:'color-mix(in oklch, var(--teal) 18%, transparent)',
+                color:'var(--teal)',fontSize:11,fontWeight:700,lineHeight:1,
+              }}>✓</span>
+          )}
         </div>
-        <button onClick={() => setTab('policies')} style={{fontSize:11,border:'1px solid var(--border)',background:'var(--bg2)',color:'var(--text2)',borderRadius:999,padding:'5px 10px',cursor:'pointer'}}>
-          {summary.activePolicyCount} active / {summary.totalPolicyCount} total
+        <button onClick={() => setTab('policies')}
+          title={summary.activePolicyCount === summary.totalPolicyCount
+            ? `${summary.totalPolicyCount} polic${summary.totalPolicyCount === 1 ? 'y' : 'ies'}`
+            : `${summary.activePolicyCount} active of ${summary.totalPolicyCount} total polic${summary.totalPolicyCount === 1 ? 'y' : 'ies'}`}
+          style={{fontSize:11,border:'1px solid var(--border)',background:'var(--bg2)',color:'var(--text2)',borderRadius:999,padding:'5px 10px',cursor:'pointer'}}>
+          {summary.activePolicyCount === summary.totalPolicyCount
+            ? `${summary.totalPolicyCount} polic${summary.totalPolicyCount === 1 ? 'y' : 'ies'}`
+            : `${summary.activePolicyCount} active / ${summary.totalPolicyCount} total`}
         </button>
-        <span style={{fontSize:11,color:'var(--text2)',border:'1px solid var(--border)',background:'var(--bg2)',borderRadius:999,padding:'5px 10px',fontWeight:700}}>{premiumLabel}</span>
-        <button onClick={() => setTab('review')} style={{
-          fontSize:11,
-          border:'1px solid ' + (summary.reviewCount ? 'color-mix(in oklch, var(--gold) 28%, transparent)' : 'var(--border)'),
-          background: summary.reviewCount ? 'color-mix(in oklch, var(--gold) 10%, transparent)' : 'var(--bg2)',
-          color: summary.reviewCount ? 'var(--gold)' : 'var(--text3)',
-          borderRadius:999,padding:'5px 10px',fontWeight:800,cursor:'pointer'
-        }}>
-          Review {summary.reviewCount}
-        </button>
-        <button onClick={() => setTab('profile')} style={{fontSize:11,border:'1px solid var(--border)',background:'var(--bg2)',color:'var(--text2)',borderRadius:999,padding:'5px 10px',cursor:'pointer'}}>
-          Profile
-        </button>
-        <span title={summary.pendingReason || summary.lastSyncedAt || summary.syncLabel}
-          style={{fontSize:11,color:syncTone,border:'1px solid var(--border)',background:'var(--bg2)',borderRadius:999,padding:'5px 10px',fontWeight:700}}>
-          {summary.syncLabel}
+        <span title="Total annual premium (active policies)"
+          aria-label={'Total annual premium ' + premiumLabel}
+          style={{fontSize:11,color:'var(--text2)',border:'1px solid var(--border)',background:'var(--bg2)',borderRadius:999,padding:'5px 10px',fontWeight:700}}>
+          <span style={{color:'var(--text3)',fontWeight:500,marginRight:4}}>Premium</span>{premiumLabel}
         </span>
+        {summary.reviewCount > 0 && (
+          <button onClick={() => setTab('review')}
+            title={`${summary.reviewCount} item${summary.reviewCount === 1 ? '' : 's'} need review`}
+            style={{
+              fontSize:11,
+              border:'1px solid color-mix(in oklch, var(--gold) 28%, transparent)',
+              background:'color-mix(in oklch, var(--gold) 10%, transparent)',
+              color:'var(--gold)',
+              borderRadius:999,padding:'5px 10px',fontWeight:800,cursor:'pointer'
+            }}>
+            Review {summary.reviewCount}
+          </button>
+        )}
+        <button onClick={() => setTab('profile')}
+          title="Open the Profile tab to edit this client's details"
+          style={{fontSize:11,border:'1px solid var(--border)',background:'var(--bg2)',color:'var(--text2)',borderRadius:999,padding:'5px 10px',cursor:'pointer'}}>
+          Edit profile
+        </button>
+        {/* Show the sync chip only when not the OK path (OK shows as ✓ dot above) */}
+        {summary.syncState !== 'synced' && (
+          <span title={summary.pendingReason || summary.lastSyncedAt || summary.syncLabel}
+            style={{fontSize:11,color:syncTone,border:'1px solid var(--border)',background:'var(--bg2)',borderRadius:999,padding:'5px 10px',fontWeight:700}}>
+            {summary.syncLabel}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -35329,6 +35432,19 @@ function DropZone({onFiles, label, active}) {
   const [dragOver, setDragOver] = useState(false);
   const [staged, setStaged] = useState([]);
   const ref = useRef(null);
+  // v2.4.0-rc1.85: mobile fallback — drag isn't a touch gesture, so on
+  // narrow viewports the zone becomes a tap-to-pick-file button. The
+  // hidden <input type="file"> opens the OS picker (camera roll, files).
+  const isMobile = useViewportIsMobile();
+  const fileInputRef = useRef(null);
+  const handleTapToUpload = () => { try { fileInputRef.current?.click(); } catch(_) {} };
+  const onPickerChange = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    const expanded = await expandZipFiles(files);
+    setStaged(prev=>[...prev,...expanded.map(f=>({file:f,preview:f.type.startsWith('image/')?URL.createObjectURL(f):null}))].slice(0,200));
+  };
 
   // Paste handler — attach to window when active
   useEffect(() => {
@@ -35384,15 +35500,30 @@ function DropZone({onFiles, label, active}) {
     </div>
   );
 
+  // Mobile-only label override: drag/paste are not natural touch gestures.
+  const mobileLabel = '📎 Tap to upload — photo, PDF, doc';
+  const desktopLabel = label || '📎 Drag & drop files here, or paste images (Ctrl+V)';
   return (
     <div ref={ref}
       onDragOver={e=>{e.preventDefault();setDragOver(true);}}
       onDragLeave={()=>setDragOver(false)}
       onDrop={onDrop}
-      style={{padding:dragOver?20:14,background:dragOver?'rgba(59,130,246,.1)':'rgba(59,130,246,.03)',border:`2px dashed ${dragOver?'var(--blue)':'var(--border)'}`,borderRadius:12,marginBottom:12,textAlign:'center',cursor:'default',transition:'all .2s'}}>
-      <div style={{fontSize:13,color:dragOver?'var(--blue2)':'var(--text3)',fontWeight:dragOver?600:400}}>
-        {dragOver ? '📎 Drop files here…' : (label || '📎 Drag & drop files here, or paste images (Ctrl+V)')}
+      onClick={isMobile ? handleTapToUpload : undefined}
+      role={isMobile ? 'button' : undefined}
+      tabIndex={isMobile ? 0 : undefined}
+      aria-label={isMobile ? 'Upload document or image' : undefined}
+      onKeyDown={isMobile ? (e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); handleTapToUpload(); } }) : undefined}
+      style={{padding:dragOver?20:(isMobile?18:14),background:dragOver?'rgba(59,130,246,.1)':'rgba(59,130,246,.03)',border:`2px dashed ${dragOver?'var(--blue)':'var(--border)'}`,borderRadius:12,marginBottom:12,textAlign:'center',cursor:isMobile?'pointer':'default',transition:'all .2s',minHeight:isMobile?56:undefined}}>
+      <div style={{fontSize:13,color:dragOver?'var(--blue2)':'var(--text3)',fontWeight:dragOver?600:(isMobile?600:400)}}>
+        {dragOver ? '📎 Drop files here…' : (isMobile ? mobileLabel : desktopLabel)}
       </div>
+      {isMobile && (
+        <input ref={fileInputRef} type="file"
+          accept="image/*,.pdf,.xlsx,.xls,.csv,.doc,.docx,.html,.htm,.txt,.rtf"
+          multiple
+          style={{display:'none'}}
+          onChange={onPickerChange} />
+      )}
     </div>
   );
 }
@@ -44340,6 +44471,16 @@ function Policies() {
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('all');
   const [selected, setSelected] = useState(new Set());
+  // v2.4.0-rc1.85: legend chip → full-label tap-reveal (mobile has no hover).
+  // Tapping a code chip pops its full label into the hint slot for 2.5s.
+  const [revealedLegend, setRevealedLegend] = useState(null);
+  const revealLegendTimerRef = useRef(null);
+  const revealLegend = (label) => {
+    setRevealedLegend(label);
+    if (revealLegendTimerRef.current) clearTimeout(revealLegendTimerRef.current);
+    revealLegendTimerRef.current = setTimeout(() => setRevealedLegend(null), 2500);
+  };
+  useEffect(() => () => { if (revealLegendTimerRef.current) clearTimeout(revealLegendTimerRef.current); }, []);
   // rc2e.32: which policy IDs to flash on import landing. Populated by the
   // policylens-policies-flashed window event dispatched from the four import
   // save paths (BulkVerify onAccept, NameDetectionReviewModal onConfirm,
@@ -49478,7 +49619,11 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
             )}
           </div>
           {selected.size > 0 && <button className="btn-danger btn-sm" onClick={deleteSelected}>🗑 Delete ({selected.size})</button>}
-          {policies.length > 0 && selected.size === 0 && <button onClick={async()=>{
+          {/* v2.4.0-rc1.85: "Clear all" is a destructive power-user action. Hide
+              on mobile — it was wrapping into the action row and getting visually
+              clipped by the sticky header, and the double-confirm dialogs are
+              hard to use on touch. Desktop still gets it as a ghost pill. */}
+          {!isMobile && policies.length > 0 && selected.size === 0 && <button onClick={async()=>{
             if(!confirm('⚠️ Delete ALL '+policies.length+' policies?\n\nThis cannot be undone. Client profile will not be affected.')) return;
             if(!confirm('Final confirmation — permanently delete all policies?')) return;
             for(const pol of policies) await deletePolicy(pol.id);
@@ -50174,21 +50319,33 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
             <div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:8,padding:'10px 14px',background:'var(--bg2)',border:`1px solid ${T_V2.border}`,borderRadius:T_V2.radius||14,marginBottom:T_V2.sectionGap||28,fontFamily:T_V2.sansFamily}}>
               <span style={{fontSize:10.5,fontWeight:600,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'0.05em'}}>Riders</span>
               {POLICY_BADGES.map(b => (
-                <span key={b.code} title={b.label} style={{
-                  padding:'2px 7px',borderRadius:999,fontWeight:600,fontSize:10,lineHeight:1.4,
-                  background:'var(--gold-dim)',color:'var(--gold)',cursor:'help',
-                }}>{b.code}</span>
+                <button key={b.code} type="button" title={b.label} aria-label={b.code + ': ' + b.label}
+                  onClick={() => revealLegend(b.code + ' — ' + b.label)}
+                  style={{
+                    padding:'4px 9px',minHeight:24,borderRadius:999,fontWeight:600,fontSize:10,lineHeight:1.4,
+                    background:'var(--gold-dim)',color:'var(--gold)',cursor:'pointer',
+                    border:'none',fontFamily:T_V2.sansFamily,
+                  }}>{b.code}</button>
               ))}
               <span style={{width:1,height:14,background:T_V2.border,margin:'0 6px'}} />
               <span style={{fontSize:10.5,fontWeight:600,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'0.05em'}}>Status</span>
               {STATUS_BADGES.map(s => (
-                <span key={s.code} style={{
-                  padding:'2px 7px',borderRadius:999,fontWeight:600,fontSize:10,lineHeight:1.4,
-                  background:`color-mix(in oklch, ${s.color} 16%, transparent)`,
-                  color:s.color,
-                }}>{s.label}</span>
+                <button key={s.code} type="button" title={s.label} aria-label={'Status: ' + s.label}
+                  onClick={() => revealLegend(s.label + ' — lifecycle status')}
+                  style={{
+                    padding:'4px 9px',minHeight:24,borderRadius:999,fontWeight:600,fontSize:10,lineHeight:1.4,
+                    background:`color-mix(in oklch, ${s.color} 16%, transparent)`,
+                    color:s.color,cursor:'pointer',
+                    border:'none',fontFamily:T_V2.sansFamily,
+                  }}>{s.label}</button>
               ))}
-              <span style={{marginLeft:'auto',fontSize:10,color:'var(--text3)',fontStyle:'italic'}}>Hover a code for full name</span>
+              <span aria-live="polite" style={{
+                marginLeft:'auto',fontSize:10,
+                color: revealedLegend ? 'var(--gold)' : 'var(--text3)',
+                fontStyle: revealedLegend ? 'normal' : 'italic',
+                fontWeight: revealedLegend ? 600 : 400,
+                transition: T_V2.motion ? 'color 180ms ease' : 'none',
+              }}>{revealedLegend || 'Tap a code for full name'}</span>
             </div>
             {/* ═══ INSURANCE ═══ */}
             {hasInsurance && (<>
@@ -50198,15 +50355,39 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
                 <div style={{flex:1,height:1,background:`linear-gradient(90deg, ${T_V2.border}, transparent)`}} />
               </div>
               <div style={{overflowX:'auto',marginBottom:12}}>
+                {/* v2.4.0-rc1.85: mobile reflow — drop SUB-TYPE and SUM ASSURED columns
+                    on narrow screens. Sub-type folds in as a small caption under the
+                    policy name. Sum Assured drops because the row already exposes
+                    Premium and policy chips (D / CI / TPD…) which carry the core
+                    coverage signal. Six columns won't fit at 360-430px without
+                    cramping every cell. */}
                 <table>
-                  <colgroup><col style={{width:32}}/><col/><col style={{width:'14%'}}/><col style={{width:'12%'}}/><col style={{width:'13%'}}/><col style={{width:'14%'}}/><col style={{width:90}}/></colgroup>
-                  {insGroups.map(group => (
+                  <colgroup>
+                    <col style={{width:32}}/>
+                    <col/>
+                    {!isMobile && <col style={{width:'14%'}}/>}
+                    <col style={{width: isMobile ? '32%' : '12%'}}/>
+                    {!isMobile && <col style={{width:'13%'}}/>}
+                    <col style={{width: isMobile ? '28%' : '14%'}}/>
+                    <col style={{width: isMobile ? 64 : 90}}/>
+                  </colgroup>
+                  {insGroups.map(group => {
+                    const colSpan = isMobile ? 5 : 7;
+                    return (
                     <React.Fragment key={group.id}>
                       <thead><tr>
-                        <th colSpan={7} style={{padding:'10px 8px 6px',background:'var(--bg2)',borderBottom:'2px solid '+group.color,fontSize:0}}>
+                        <th colSpan={colSpan} style={{padding:'10px 8px 6px',background:'var(--bg2)',borderBottom:'2px solid '+group.color,fontSize:0}}>
                           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
                             <div style={{display:'flex',alignItems:'center',gap:6}}>
-                              <input type='checkbox' checked={group.items.every(p=>selected.has(p.id))&&group.items.length>0} onChange={()=>{const ids=group.items.map(p=>p.id);const allSel=ids.every(id=>selected.has(id));setSelected(prev=>{const n=new Set(prev);ids.forEach(id=>allSel?n.delete(id):n.add(id));return n;});}} style={{accentColor:'var(--gold)'}} />
+                              {/* v2.4.0-rc1.85: aria-label + title for the group select-all checkbox.
+                                  Previously the only label was the visual "{icon} {sub}" text next to it,
+                                  which screen readers couldn't associate with the input. */}
+                              <input type='checkbox'
+                                aria-label={'Select all ' + group.sub + ' policies (' + group.items.length + ')'}
+                                title={'Select all ' + group.sub + ' policies'}
+                                checked={group.items.every(p=>selected.has(p.id))&&group.items.length>0}
+                                onChange={()=>{const ids=group.items.map(p=>p.id);const allSel=ids.every(id=>selected.has(id));setSelected(prev=>{const n=new Set(prev);ids.forEach(id=>allSel?n.delete(id):n.add(id));return n;});}}
+                                style={{accentColor:'var(--gold)',width:18,height:18,cursor:'pointer'}} />
                               <span style={{fontSize:13,fontWeight:700,color:group.color}}>{group.icon} {group.sub}</span>
                               <span style={{fontSize:11,color:'var(--text3)',fontWeight:400}}>({group.items.length})</span>
                             </div>
@@ -50214,16 +50395,26 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
                         </th>
                       </tr>
                       <tr style={{fontSize:10,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.5px'}}>
-                        <th style={{width:32}}></th><th style={{textAlign:'left'}}>Policy</th><th>Sub-type</th><th>Insurer/Platform</th><th style={{textAlign:'right'}}>Sum Assured</th><th style={{textAlign:'right'}}>Premium</th><th>Actions</th>
+                        <th style={{width:32}}></th>
+                        <th style={{textAlign:'left'}}>Policy</th>
+                        {!isMobile && <th>Sub-type</th>}
+                        <th>{isMobile ? 'Insurer' : 'Insurer/Platform'}</th>
+                        {!isMobile && <th style={{textAlign:'right'}}>Sum Assured</th>}
+                        <th style={{textAlign:'right'}}>Premium</th>
+                        <th>{isMobile ? '' : 'Actions'}</th>
                       </tr></thead>
                       <tbody>
                         {group.items.map(p => {
                           const bens = benIcons(p);
+                          const subTypeText = p.subType==='Integrated Shield Plan'&&p.hasRider?'ISP + Rider':p.subType||'—';
                           return (
                             <tr key={p.id} style={flashRowStyle(p.id)}>
-                              <td><input type='checkbox' checked={selected.has(p.id)} onChange={()=>toggleSelect(p.id)} style={{accentColor:'var(--gold)'}} /></td>
+                              <td><input type='checkbox' aria-label={'Select ' + (p.policyName||p.productName||'policy')} checked={selected.has(p.id)} onChange={()=>toggleSelect(p.id)} style={{accentColor:'var(--gold)'}} /></td>
                               <td>
                                 <div style={{fontWeight:500}}>{p.policyName||p.productName||'Unnamed'}</div>
+                                {isMobile && subTypeText !== '—' && (
+                                  <div style={{fontSize:10,color:'var(--text3)',marginTop:1}}>{subTypeText}</div>
+                                )}
                                 {p.policyNumber && <div style={{fontSize:10,color:'var(--text3)'}}>{p.policyNumber}</div>}
                                 {p.userRemarks && <div style={{fontSize:9,color:'var(--gold)',fontStyle:'italic',display:'flex',alignItems:'center',gap:3}}>"{p.userRemarks.length>35?p.userRemarks.substring(0,35)+'…':p.userRemarks}" <span style={{cursor:'pointer',fontSize:7,opacity:.5}} onClick={e=>{e.stopPropagation();savePolicy({...p,userRemarks:''});}}>✕</span></div>}
                                 <div style={{display:'flex',gap:3,marginTop:2,alignItems:'center',flexWrap:'wrap'}}>
@@ -50237,11 +50428,14 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
                                     return <span title={'Status: '+lbl} style={{fontSize:8,fontWeight:600,padding:'1px 5px',borderRadius:3,background:c+'22',color:c,border:`1px solid ${c}40`}}>{lbl}</span>;
                                   })()}
                                   {p.excludeFromRetirement && <span title="Excluded from retirement plan calculations" style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:3,background:'rgba(244,63,94,.12)',color:'#dc2626',border:'1px solid rgba(244,63,94,.25)'}}>🚫 Not in retirement</span>}
+                                  {isMobile && p.sumAssured && parseFloat(p.sumAssured) > 0 && (
+                                    <span title="Sum Assured" style={{fontSize:8,fontWeight:600,padding:'1px 5px',borderRadius:3,background:'var(--bg3)',color:'var(--text3)',border:'1px solid var(--border)'}} className="mono">SA {fmt(p.sumAssured,p.currency||'SGD')}</span>
+                                  )}
                                 </div>
                               </td>
-                              <td style={{fontSize:11,color:'var(--text2)'}}>{p.subType==='Integrated Shield Plan'&&p.hasRider?'ISP + Rider':p.subType||'—'}</td>
+                              {!isMobile && <td style={{fontSize:11,color:'var(--text2)'}}>{subTypeText}</td>}
                               <td>{p.insurer?<InsurerBadge name={p.insurer}/>:'—'}</td>
-                              <td className="mono" style={{textAlign:'right'}}>{fmt(p.sumAssured,p.currency||'SGD')}</td>
+                              {!isMobile && <td className="mono" style={{textAlign:'right'}}>{fmt(p.sumAssured,p.currency||'SGD')}</td>}
                               <td className="mono" style={{textAlign:'right'}}>{premCell(p)}</td>
                               <td>{actions(p)}</td>
                             </tr>
@@ -50249,7 +50443,7 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
                         })}
                       </tbody>
                     </React.Fragment>
-                  ))}
+                  );})}
                 </table>
               </div>
             </>)}
@@ -50261,26 +50455,50 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
                 <h3 style={{fontFamily:T_V2.serifFamily,fontSize:22,fontWeight:400,color:'var(--text)',letterSpacing:'-0.015em',margin:0}}>Fixed Deposits, T-bills &amp; Bonds</h3>
                 <div style={{flex:1,height:1,background:`linear-gradient(90deg, ${T_V2.border}, transparent)`}} />
               </div>
+              {/* v2.4.0-rc1.85: same mobile reflow as the Insurance table —
+                  drop TYPE column; fold the type into the policy-name caption. */}
               <div style={{overflowX:'auto',marginBottom:12}}>
                 <table>
-                  <colgroup><col style={{width:32}}/><col/><col style={{width:'14%'}}/><col style={{width:'12%'}}/><col style={{width:'13%'}}/><col style={{width:'12%'}}/><col style={{width:90}}/></colgroup>
+                  <colgroup>
+                    <col style={{width:32}}/>
+                    <col/>
+                    {!isMobile && <col style={{width:'14%'}}/>}
+                    <col style={{width: isMobile ? '28%' : '12%'}}/>
+                    <col style={{width: isMobile ? '28%' : '13%'}}/>
+                    {!isMobile && <col style={{width:'12%'}}/>}
+                    <col style={{width: isMobile ? 64 : 90}}/>
+                  </colgroup>
                   <thead><tr style={{fontSize:10,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.5px'}}>
-                    <th style={{width:32}}><input type='checkbox' checked={fiItems.every(p=>selected.has(p.id))&&fiItems.length>0} onChange={()=>{const ids=fiItems.map(p=>p.id);const allSel=ids.every(id=>selected.has(id));setSelected(prev=>{const n=new Set(prev);ids.forEach(id=>allSel?n.delete(id):n.add(id));return n;});}} style={{accentColor:'var(--gold)'}} /></th>
-                    <th style={{textAlign:'left'}}>Instrument</th><th>Type</th><th>Bank</th><th style={{textAlign:'right'}}>Principal</th><th style={{textAlign:'right'}}>Yield</th><th>Actions</th>
+                    <th style={{width:32}}>
+                      <input type='checkbox'
+                        aria-label="Select all Fixed Deposits / Bonds"
+                        title="Select all Fixed Deposits / Bonds"
+                        checked={fiItems.every(p=>selected.has(p.id))&&fiItems.length>0}
+                        onChange={()=>{const ids=fiItems.map(p=>p.id);const allSel=ids.every(id=>selected.has(id));setSelected(prev=>{const n=new Set(prev);ids.forEach(id=>allSel?n.delete(id):n.add(id));return n;});}}
+                        style={{accentColor:'var(--gold)',width:18,height:18,cursor:'pointer'}} />
+                    </th>
+                    <th style={{textAlign:'left'}}>Instrument</th>
+                    {!isMobile && <th>Type</th>}
+                    <th>Bank</th>
+                    <th style={{textAlign:'right'}}>Principal</th>
+                    {!isMobile && <th style={{textAlign:'right'}}>Yield</th>}
+                    <th>{isMobile ? '' : 'Actions'}</th>
                   </tr></thead>
                   <tbody>
                     {fiItems.sort((a,b)=>(a.insurer||'').localeCompare(b.insurer||'')).map(p => (
                       <tr key={p.id} style={flashRowStyle(p.id)}>
-                        <td><input type='checkbox' checked={selected.has(p.id)} onChange={()=>toggleSelect(p.id)} style={{accentColor:'var(--gold)'}} /></td>
+                        <td><input type='checkbox' aria-label={'Select ' + (p.productName||p.policyName||p.subType||'instrument')} checked={selected.has(p.id)} onChange={()=>toggleSelect(p.id)} style={{accentColor:'var(--gold)'}} /></td>
                         <td>
                           <div style={{fontWeight:500}}>{p.productName||p.policyName||p.subType||'Unnamed'}</div>
+                          {isMobile && p.subType && <div style={{fontSize:10,color:'var(--text3)',marginTop:1}}>{p.subType||'FD'}</div>}
+                          {isMobile && p.fdYieldPct && <div style={{fontSize:10,marginTop:1}}><span style={{color:'var(--green2)',fontWeight:600}}>{p.fdYieldPct}% yield</span></div>}
                           {p.userRemarks && <div style={{fontSize:9,color:'var(--gold)',fontStyle:'italic'}}>"{p.userRemarks.length>35?p.userRemarks.substring(0,35)+'…':p.userRemarks}"</div>}
                           {p.fdMaturityDate && <div style={{fontSize:9,color:new Date(p.fdMaturityDate)<new Date()?'var(--gold)':'var(--text3)'}}>{new Date(p.fdMaturityDate)<new Date()?'Matured':('Mat: '+new Date(p.fdMaturityDate).toLocaleDateString('en-SG',{day:'numeric',month:'short',year:'2-digit'}))}</div>}
                         </td>
-                        <td style={{fontSize:11,color:'var(--text2)'}}>{p.subType||'FD'}</td>
+                        {!isMobile && <td style={{fontSize:11,color:'var(--text2)'}}>{p.subType||'FD'}</td>}
                         <td>{p.insurer?<InsurerBadge name={p.insurer}/>:'—'}</td>
                         <td className="mono" style={{textAlign:'right'}}>{p.fdPrincipal?'$'+parseInt(p.fdPrincipal).toLocaleString():'—'}</td>
-                        <td className="mono" style={{textAlign:'right'}}>{p.fdYieldPct?<span style={{color:'var(--green2)',fontWeight:600}}>{p.fdYieldPct}%</span>:'—'}</td>
+                        {!isMobile && <td className="mono" style={{textAlign:'right'}}>{p.fdYieldPct?<span style={{color:'var(--green2)',fontWeight:600}}>{p.fdYieldPct}%</span>:'—'}</td>}
                         <td>{actions(p)}</td>
                       </tr>
                     ))}
@@ -50296,24 +50514,46 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
                 <h3 style={{fontFamily:T_V2.serifFamily,fontSize:22,fontWeight:400,color:'var(--text)',letterSpacing:'-0.015em',margin:0}}>Other Assets</h3>
                 <div style={{flex:1,height:1,background:`linear-gradient(90deg, ${T_V2.border}, transparent)`}} />
               </div>
+              {/* v2.4.0-rc1.85: same mobile reflow pattern. */}
               <div style={{overflowX:'auto',marginBottom:12}}>
                 <table>
-                  <colgroup><col style={{width:32}}/><col/><col style={{width:'14%'}}/><col style={{width:'12%'}}/><col style={{width:'13%'}}/><col style={{width:'12%'}}/><col style={{width:90}}/></colgroup>
+                  <colgroup>
+                    <col style={{width:32}}/>
+                    <col/>
+                    {!isMobile && <col style={{width:'14%'}}/>}
+                    <col style={{width: isMobile ? '28%' : '12%'}}/>
+                    <col style={{width: isMobile ? '28%' : '13%'}}/>
+                    {!isMobile && <col style={{width:'12%'}}/>}
+                    <col style={{width: isMobile ? 64 : 90}}/>
+                  </colgroup>
                   <thead><tr style={{fontSize:10,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.5px'}}>
-                    <th style={{width:32}}></th><th style={{textAlign:'left'}}>Asset</th><th>Type</th><th>Provider</th><th style={{textAlign:'right'}}>Value</th><th style={{textAlign:'right'}}>Yield / Return</th><th>Actions</th>
+                    <th style={{width:32}}></th>
+                    <th style={{textAlign:'left'}}>Asset</th>
+                    {!isMobile && <th>Type</th>}
+                    <th>Provider</th>
+                    <th style={{textAlign:'right'}}>Value</th>
+                    {!isMobile && <th style={{textAlign:'right'}}>Yield / Return</th>}
+                    <th>{isMobile ? '' : 'Actions'}</th>
                   </tr></thead>
                   <tbody>
-                    {otherItems.sort((a,b)=>(a.subType||'').localeCompare(b.subType||'')).map(p => (
+                    {otherItems.sort((a,b)=>(a.subType||'').localeCompare(b.subType||'')).map(p => {
+                      const yieldText = p.fdYieldPct ? p.fdYieldPct+'%' : (p.retAccumYield ? p.retAccumYield+'%' : '');
+                      return (
                       <tr key={p.id} style={flashRowStyle(p.id)}>
-                        <td><input type='checkbox' checked={selected.has(p.id)} onChange={()=>toggleSelect(p.id)} style={{accentColor:'var(--gold)'}} /></td>
-                        <td><div style={{fontWeight:500}}>{p.productName||p.policyName||'Unnamed'}</div>{p.userRemarks && <div style={{fontSize:9,color:'var(--gold)',fontStyle:'italic'}}>"{p.userRemarks.length>35?p.userRemarks.substring(0,35)+'…':p.userRemarks}"</div>}</td>
-                        <td style={{fontSize:11,color:'var(--text2)'}}>{p.subType||'—'}</td>
+                        <td><input type='checkbox' aria-label={'Select ' + (p.productName||p.policyName||'asset')} checked={selected.has(p.id)} onChange={()=>toggleSelect(p.id)} style={{accentColor:'var(--gold)'}} /></td>
+                        <td>
+                          <div style={{fontWeight:500}}>{p.productName||p.policyName||'Unnamed'}</div>
+                          {isMobile && p.subType && <div style={{fontSize:10,color:'var(--text3)',marginTop:1}}>{p.subType}</div>}
+                          {isMobile && yieldText && <div style={{fontSize:10,color:'var(--green2)',fontWeight:600,marginTop:1}}>{yieldText} yield</div>}
+                          {p.userRemarks && <div style={{fontSize:9,color:'var(--gold)',fontStyle:'italic'}}>"{p.userRemarks.length>35?p.userRemarks.substring(0,35)+'…':p.userRemarks}"</div>}
+                        </td>
+                        {!isMobile && <td style={{fontSize:11,color:'var(--text2)'}}>{p.subType||'—'}</td>}
                         <td>{p.insurer?<InsurerBadge name={p.insurer}/>:'—'}</td>
                         <td className="mono" style={{textAlign:'right'}}>{p.fdPrincipal?'$'+parseInt(p.fdPrincipal).toLocaleString():p.sumAssured?fmt(p.sumAssured):p.annualPremium?fmt(p.annualPremium):'—'}</td>
-                        <td className="mono" style={{textAlign:'right'}}>{p.fdYieldPct?p.fdYieldPct+'%':p.retAccumYield?p.retAccumYield+'%':'—'}</td>
+                        {!isMobile && <td className="mono" style={{textAlign:'right'}}>{yieldText || '—'}</td>}
                         <td>{actions(p)}</td>
                       </tr>
-                    ))}
+                    );})}
                   </tbody>
                 </table>
               </div>

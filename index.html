@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="browsermode" content="application">
 <title>PolicyLens</title>
 <script>window.onerror=function(m,s){if(!s||m==='Script error.')return true;return false};window.onunhandledrejection=function(e){if(!e||!e.reason)return;var r=String(e.reason);if(r==='Script error.')e.preventDefault();};
@@ -316,7 +316,7 @@ label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;lett
 /* ══════ TOAST NOTIFICATIONS ══════ */
 @keyframes toastIn{from{opacity:0;transform:translateY(16px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes toastOut{from{opacity:1;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(-8px) scale(.95)}}
-.toast-container{position:fixed;bottom:72px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;max-width:min(420px,90vw)}
+.toast-container{position:fixed;bottom:calc(72px + env(safe-area-inset-bottom, 0px));left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;max-width:min(420px,90vw)}
 .toast{pointer-events:auto;padding:10px 16px;border-radius:10px;font-size:12px;font-weight:500;line-height:1.4;box-shadow:0 8px 24px rgba(0,0,0,.35);animation:toastIn .25s ease-out;display:flex;align-items:center;gap:8px;backdrop-filter:blur(12px)}
 .toast.exiting{animation:toastOut .2s ease-in forwards}
 .toast-success{background:rgba(91,168,160,.15);border:1px solid rgba(91,168,160,.3);color:var(--green2)}
@@ -362,6 +362,34 @@ label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;lett
   .resp-2col,.resp-5col,.resp-side{grid-template-columns:1fr!important}
 }
 
+/* ══════ TOUCH TAP TARGETS (v2.4.0-rc1.85) ══════
+   Coarse-pointer devices (phone + tablet) get a 44×44 logical hit area
+   on small chips and icon buttons. We DON'T inflate the visible chip
+   size — `position:relative` + an `::after` overlay extends the touchable
+   region. Skips selectors that already have explicit tap-friendly sizing
+   (>=36px height) to avoid breaking flex layouts. */
+@media (pointer: coarse) {
+  /* Chip-style buttons that render under 36px tall — pad the hit area.
+     The button still LOOKS its original size; the invisible ::after just
+     widens what counts as a tap. */
+  button[style*="borderRadius:999"]:not([style*="height:32"]):not([style*="height:36"]):not([style*="height:40"]):not([style*="height:42"]):not([style*="height:44"]) {
+    position: relative;
+  }
+  button[style*="borderRadius:999"]:not([style*="height:32"]):not([style*="height:36"]):not([style*="height:40"]):not([style*="height:42"]):not([style*="height:44"])::after {
+    content: "";
+    position: absolute;
+    inset: -8px;
+    min-width: 44px;
+    min-height: 44px;
+    /* Keep transparent so the visual chip is unchanged. */
+  }
+  /* Tiny ✕ / × close buttons commonly render at 18px — give them a
+     real tap target without changing the visible glyph size. */
+  .btn-sm, .btn-danger.btn-sm {
+    min-height: 36px;
+  }
+}
+
 /* ══════ AUTH LOADING (v2.1.0i) ══════ */
 #auth-loading{position:fixed;inset:0;z-index:10001;background:var(--bg);display:flex;align-items:center;justify-content:center}
 @keyframes plPulse{0%,100%{opacity:.6}50%{opacity:1}}
@@ -395,14 +423,21 @@ label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;lett
    shared chrome. ====================================================== */
 :root { --ckg-strip-h: 36px; }
 @media (max-width: 640px) { :root { --ckg-strip-h: 44px; } }
-body { padding-top: var(--ckg-strip-h) !important; }
+/* v2.4.0-rc1.85: iPhone notch / Dynamic Island safe-area support.
+   The fixed-position CKG strip extends into the unsafe area at the
+   top of the viewport (under the notch), so we pad its TOP by
+   env(safe-area-inset-top) and grow the body's padding-top to match.
+   Falls back to 0 on devices without a notch. */
+body { padding-top: calc(var(--ckg-strip-h) + env(safe-area-inset-top, 0px)) !important; }
 .ckg-suite-strip {
   position: fixed; top: 0; left: 0; right: 0;
-  height: var(--ckg-strip-h);
+  height: calc(var(--ckg-strip-h) + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
   background: #0a0a0a;
   border-bottom: 1px solid rgba(214, 168, 122, 0.18);
   display: flex; align-items: center;
-  padding: 0 14px;
+  padding-left: calc(14px + env(safe-area-inset-left, 0px));
+  padding-right: calc(14px + env(safe-area-inset-right, 0px));
   font-family: "Geist", "Inter", system-ui, -apple-system, sans-serif;
   z-index: 999999;
   box-sizing: border-box;
@@ -34642,10 +34677,13 @@ const OrientationLock = memo(function OrientationLock() {
     portrait: 'PORTRAIT',
     landscape: 'LANDSCAPE'
   };
-  const icons = {
-    auto: '↻',
-    portrait: '▯',
-    landscape: '▭'
+  // v2.4.0-rc1.85: text labels instead of glyph icons. The previous AUTO
+  // glyph (↻) read as "refresh" — users tapped it expecting a page reload.
+  // "AUTO/P/L" is unambiguous and self-describing.
+  const shortLabels = {
+    auto: 'AUTO',
+    portrait: 'P',
+    landscape: 'L'
   };
   const colors = {
     auto: 'var(--text3)',
@@ -34654,22 +34692,25 @@ const OrientationLock = memo(function OrientationLock() {
   };
   return /*#__PURE__*/React.createElement("button", {
     onClick: cycle,
-    title: `Orientation: ${labels[mode]} (tap to change)`,
+    title: `Orientation lock: ${labels[mode]} (tap to change)`,
     "aria-label": `Orientation lock: ${labels[mode]}`,
     style: {
       position: 'fixed',
-      bottom: 14,
-      right: 14,
+      // v2.4.0-rc1.85: respect iPhone home-indicator safe area
+      bottom: 'calc(14px + env(safe-area-inset-bottom, 0px))',
+      right: 'calc(14px + env(safe-area-inset-right, 0px))',
       zIndex: 9997,
       // v2.3.0-rc2c.5q: raised to ensure visibility above other floating UI
-      width: 42,
+      minWidth: 42,
+      width: mode === 'auto' ? 50 : 42,
       height: 42,
-      borderRadius: '50%',
+      borderRadius: 21,
       background: 'var(--bg2)',
       border: `1.5px solid ${colors[mode]}`,
       color: colors[mode],
-      fontSize: 18,
+      fontSize: mode === 'auto' ? 9 : 16,
       fontWeight: 700,
+      letterSpacing: mode === 'auto' ? '0.05em' : '0',
       cursor: 'pointer',
       boxShadow: '0 2px 10px rgba(0,0,0,.25)',
       display: 'flex',
@@ -34677,9 +34718,9 @@ const OrientationLock = memo(function OrientationLock() {
       justifyContent: 'center',
       padding: 0,
       opacity: mode === 'auto' ? 0.55 : 1,
-      transition: 'opacity .2s, border-color .2s, color .2s'
+      transition: 'opacity .2s, border-color .2s, color .2s, width .2s, font-size .2s'
     }
-  }, icons[mode]);
+  }, shortLabels[mode]);
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -39164,11 +39205,17 @@ function Header() {
     }
   }, "\u25B6"), !isMobile && ' Client View'))), /*#__PURE__*/React.createElement("div", {
     style: {
+      position: 'relative'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
       display: 'flex',
       alignItems: 'center',
       padding: isMobile ? '0 8px 8px' : '0 18px 10px',
       gap: 4,
-      overflowX: 'auto'
+      overflowX: 'auto',
+      scrollbarWidth: 'none',
+      msOverflowStyle: 'none'
     }
   }, tabs.map(t => {
     const active = tab === t.id;
@@ -39176,8 +39223,13 @@ function Header() {
       key: t.id,
       onClick: () => setTab(t.id),
       style: {
-        background: active ? T.primary : 'transparent',
-        color: active ? '#fff' : T.text2,
+        // v2.4.0-rc1.85: softer active pill — tinted primary background
+        // + primary text + thin underline accent instead of a solid
+        // fill. The previous heavy gold pill visually dominated the
+        // tab strip and made the other tabs feel inactive even when
+        // navigating between sections.
+        background: active ? T.primaryDim : 'transparent',
+        color: active ? T.primary : T.text2,
         border: 'none',
         padding: isMobile ? '6px 10px' : '8px 14px',
         borderRadius: 999,
@@ -39191,7 +39243,8 @@ function Header() {
         transition: T.motion ? 'all 180ms ease' : 'none',
         whiteSpace: 'nowrap',
         flexShrink: 0,
-        position: 'relative'
+        position: 'relative',
+        boxShadow: active ? 'inset 0 -2px 0 0 ' + T.primary : 'none'
       },
       onMouseEnter: e => {
         if (!active && T.motion) e.currentTarget.style.background = T.bg3;
@@ -39208,7 +39261,7 @@ function Header() {
       style: {
         marginLeft: 2,
         padding: '1px 7px',
-        background: active ? 'rgba(255,255,255,0.25)' : T.primaryDim,
+        background: active ? T.primary : T.primaryDim,
         color: active ? '#fff' : T.primary,
         fontSize: 10,
         fontWeight: 700,
@@ -39219,7 +39272,7 @@ function Header() {
       style: {
         marginLeft: 2,
         padding: '1px 7px',
-        background: active ? 'rgba(255,255,255,0.25)' : 'color-mix(in oklch, var(--gold) 16%, transparent)',
+        background: active ? 'var(--gold)' : 'color-mix(in oklch, var(--gold) 16%, transparent)',
         color: active ? '#fff' : 'var(--gold)',
         fontSize: 10,
         fontWeight: 700,
@@ -39227,6 +39280,17 @@ function Header() {
         lineHeight: 1.4
       }
     }, reviewQueueCount));
+  })), isMobile && /*#__PURE__*/React.createElement("div", {
+    "aria-hidden": "true",
+    style: {
+      position: 'absolute',
+      top: 0,
+      right: 0,
+      bottom: 0,
+      width: 28,
+      pointerEvents: 'none',
+      background: 'linear-gradient(to right, transparent, ' + T.bg + ')'
+    }
   })));
 }
 
@@ -39309,8 +39373,25 @@ function ClientContextHeader() {
       fontSize: 11,
       color: 'var(--text3)'
     }
-  }, ageLabel)), /*#__PURE__*/React.createElement("button", {
+  }, ageLabel), summary.syncState === 'synced' && /*#__PURE__*/React.createElement("span", {
+    title: summary.lastSyncedAt ? 'Synced ' + summary.lastSyncedAt : 'Synced',
+    "aria-label": "Synced",
+    style: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      width: 18,
+      height: 18,
+      borderRadius: '50%',
+      background: 'color-mix(in oklch, var(--teal) 18%, transparent)',
+      color: 'var(--teal)',
+      fontSize: 11,
+      fontWeight: 700,
+      lineHeight: 1
+    }
+  }, "\u2713")), /*#__PURE__*/React.createElement("button", {
     onClick: () => setTab('policies'),
+    title: summary.activePolicyCount === summary.totalPolicyCount ? `${summary.totalPolicyCount} polic${summary.totalPolicyCount === 1 ? 'y' : 'ies'}` : `${summary.activePolicyCount} active of ${summary.totalPolicyCount} total polic${summary.totalPolicyCount === 1 ? 'y' : 'ies'}`,
     style: {
       fontSize: 11,
       border: '1px solid var(--border)',
@@ -39320,7 +39401,9 @@ function ClientContextHeader() {
       padding: '5px 10px',
       cursor: 'pointer'
     }
-  }, summary.activePolicyCount, " active / ", summary.totalPolicyCount, " total"), /*#__PURE__*/React.createElement("span", {
+  }, summary.activePolicyCount === summary.totalPolicyCount ? `${summary.totalPolicyCount} polic${summary.totalPolicyCount === 1 ? 'y' : 'ies'}` : `${summary.activePolicyCount} active / ${summary.totalPolicyCount} total`), /*#__PURE__*/React.createElement("span", {
+    title: "Total annual premium (active policies)",
+    "aria-label": 'Total annual premium ' + premiumLabel,
     style: {
       fontSize: 11,
       color: 'var(--text2)',
@@ -39330,13 +39413,20 @@ function ClientContextHeader() {
       padding: '5px 10px',
       fontWeight: 700
     }
-  }, premiumLabel), /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: 'var(--text3)',
+      fontWeight: 500,
+      marginRight: 4
+    }
+  }, "Premium"), premiumLabel), summary.reviewCount > 0 && /*#__PURE__*/React.createElement("button", {
     onClick: () => setTab('review'),
+    title: `${summary.reviewCount} item${summary.reviewCount === 1 ? '' : 's'} need review`,
     style: {
       fontSize: 11,
-      border: '1px solid ' + (summary.reviewCount ? 'color-mix(in oklch, var(--gold) 28%, transparent)' : 'var(--border)'),
-      background: summary.reviewCount ? 'color-mix(in oklch, var(--gold) 10%, transparent)' : 'var(--bg2)',
-      color: summary.reviewCount ? 'var(--gold)' : 'var(--text3)',
+      border: '1px solid color-mix(in oklch, var(--gold) 28%, transparent)',
+      background: 'color-mix(in oklch, var(--gold) 10%, transparent)',
+      color: 'var(--gold)',
       borderRadius: 999,
       padding: '5px 10px',
       fontWeight: 800,
@@ -39344,6 +39434,7 @@ function ClientContextHeader() {
     }
   }, "Review ", summary.reviewCount), /*#__PURE__*/React.createElement("button", {
     onClick: () => setTab('profile'),
+    title: "Open the Profile tab to edit this client's details",
     style: {
       fontSize: 11,
       border: '1px solid var(--border)',
@@ -39353,7 +39444,7 @@ function ClientContextHeader() {
       padding: '5px 10px',
       cursor: 'pointer'
     }
-  }, "Profile"), /*#__PURE__*/React.createElement("span", {
+  }, "Edit profile"), summary.syncState !== 'synced' && /*#__PURE__*/React.createElement("span", {
     title: summary.pendingReason || summary.lastSyncedAt || summary.syncLabel,
     style: {
       fontSize: 11,
@@ -43438,6 +43529,26 @@ function DropZone({
   const [dragOver, setDragOver] = useState(false);
   const [staged, setStaged] = useState([]);
   const ref = useRef(null);
+  // v2.4.0-rc1.85: mobile fallback — drag isn't a touch gesture, so on
+  // narrow viewports the zone becomes a tap-to-pick-file button. The
+  // hidden <input type="file"> opens the OS picker (camera roll, files).
+  const isMobile = useViewportIsMobile();
+  const fileInputRef = useRef(null);
+  const handleTapToUpload = () => {
+    try {
+      fileInputRef.current?.click();
+    } catch (_) {}
+  };
+  const onPickerChange = async e => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    const expanded = await expandZipFiles(files);
+    setStaged(prev => [...prev, ...expanded.map(f => ({
+      file: f,
+      preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : null
+    }))].slice(0, 200));
+  };
 
   // Paste handler — attach to window when active
   useEffect(() => {
@@ -43588,6 +43699,10 @@ function DropZone({
       marginTop: 6
     }
   }, "Paste more images (Ctrl+V) or drag more files, then hit Extract"));
+
+  // Mobile-only label override: drag/paste are not natural touch gestures.
+  const mobileLabel = '📎 Tap to upload — photo, PDF, doc';
+  const desktopLabel = label || '📎 Drag & drop files here, or paste images (Ctrl+V)';
   return /*#__PURE__*/React.createElement("div", {
     ref: ref,
     onDragOver: e => {
@@ -43596,23 +43711,43 @@ function DropZone({
     },
     onDragLeave: () => setDragOver(false),
     onDrop: onDrop,
+    onClick: isMobile ? handleTapToUpload : undefined,
+    role: isMobile ? 'button' : undefined,
+    tabIndex: isMobile ? 0 : undefined,
+    "aria-label": isMobile ? 'Upload document or image' : undefined,
+    onKeyDown: isMobile ? e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        handleTapToUpload();
+      }
+    } : undefined,
     style: {
-      padding: dragOver ? 20 : 14,
+      padding: dragOver ? 20 : isMobile ? 18 : 14,
       background: dragOver ? 'rgba(59,130,246,.1)' : 'rgba(59,130,246,.03)',
       border: `2px dashed ${dragOver ? 'var(--blue)' : 'var(--border)'}`,
       borderRadius: 12,
       marginBottom: 12,
       textAlign: 'center',
-      cursor: 'default',
-      transition: 'all .2s'
+      cursor: isMobile ? 'pointer' : 'default',
+      transition: 'all .2s',
+      minHeight: isMobile ? 56 : undefined
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       color: dragOver ? 'var(--blue2)' : 'var(--text3)',
-      fontWeight: dragOver ? 600 : 400
+      fontWeight: dragOver ? 600 : isMobile ? 600 : 400
     }
-  }, dragOver ? '📎 Drop files here…' : label || '📎 Drag & drop files here, or paste images (Ctrl+V)'));
+  }, dragOver ? '📎 Drop files here…' : isMobile ? mobileLabel : desktopLabel), isMobile && /*#__PURE__*/React.createElement("input", {
+    ref: fileInputRef,
+    type: "file",
+    accept: "image/*,.pdf,.xlsx,.xls,.csv,.doc,.docx,.html,.htm,.txt,.rtf",
+    multiple: true,
+    style: {
+      display: 'none'
+    },
+    onChange: onPickerChange
+  }));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -61779,6 +61914,18 @@ function Policies() {
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('all');
   const [selected, setSelected] = useState(new Set());
+  // v2.4.0-rc1.85: legend chip → full-label tap-reveal (mobile has no hover).
+  // Tapping a code chip pops its full label into the hint slot for 2.5s.
+  const [revealedLegend, setRevealedLegend] = useState(null);
+  const revealLegendTimerRef = useRef(null);
+  const revealLegend = label => {
+    setRevealedLegend(label);
+    if (revealLegendTimerRef.current) clearTimeout(revealLegendTimerRef.current);
+    revealLegendTimerRef.current = setTimeout(() => setRevealedLegend(null), 2500);
+  };
+  useEffect(() => () => {
+    if (revealLegendTimerRef.current) clearTimeout(revealLegendTimerRef.current);
+  }, []);
   // rc2e.32: which policy IDs to flash on import landing. Populated by the
   // policylens-policies-flashed window event dispatched from the four import
   // save paths (BulkVerify onAccept, NameDetectionReviewModal onConfirm,
@@ -67493,7 +67640,7 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
   }, sub))))))), selected.size > 0 && /*#__PURE__*/React.createElement("button", {
     className: "btn-danger btn-sm",
     onClick: deleteSelected
-  }, "\uD83D\uDDD1 Delete (", selected.size, ")"), policies.length > 0 && selected.size === 0 && /*#__PURE__*/React.createElement("button", {
+  }, "\uD83D\uDDD1 Delete (", selected.size, ")"), !isMobile && policies.length > 0 && selected.size === 0 && /*#__PURE__*/React.createElement("button", {
     onClick: async () => {
       if (!confirm('⚠️ Delete ALL ' + policies.length + ' policies?\n\nThis cannot be undone. Client profile will not be affected.')) return;
       if (!confirm('Final confirmation — permanently delete all policies?')) return;
@@ -68818,18 +68965,24 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
         textTransform: 'uppercase',
         letterSpacing: '0.05em'
       }
-    }, "Riders"), POLICY_BADGES.map(b => /*#__PURE__*/React.createElement("span", {
+    }, "Riders"), POLICY_BADGES.map(b => /*#__PURE__*/React.createElement("button", {
       key: b.code,
+      type: "button",
       title: b.label,
+      "aria-label": b.code + ': ' + b.label,
+      onClick: () => revealLegend(b.code + ' — ' + b.label),
       style: {
-        padding: '2px 7px',
+        padding: '4px 9px',
+        minHeight: 24,
         borderRadius: 999,
         fontWeight: 600,
         fontSize: 10,
         lineHeight: 1.4,
         background: 'var(--gold-dim)',
         color: 'var(--gold)',
-        cursor: 'help'
+        cursor: 'pointer',
+        border: 'none',
+        fontFamily: T_V2.sansFamily
       }
     }, b.code)), /*#__PURE__*/React.createElement("span", {
       style: {
@@ -68846,25 +68999,36 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
         textTransform: 'uppercase',
         letterSpacing: '0.05em'
       }
-    }, "Status"), STATUS_BADGES.map(s => /*#__PURE__*/React.createElement("span", {
+    }, "Status"), STATUS_BADGES.map(s => /*#__PURE__*/React.createElement("button", {
       key: s.code,
+      type: "button",
+      title: s.label,
+      "aria-label": 'Status: ' + s.label,
+      onClick: () => revealLegend(s.label + ' — lifecycle status'),
       style: {
-        padding: '2px 7px',
+        padding: '4px 9px',
+        minHeight: 24,
         borderRadius: 999,
         fontWeight: 600,
         fontSize: 10,
         lineHeight: 1.4,
         background: `color-mix(in oklch, ${s.color} 16%, transparent)`,
-        color: s.color
+        color: s.color,
+        cursor: 'pointer',
+        border: 'none',
+        fontFamily: T_V2.sansFamily
       }
     }, s.label)), /*#__PURE__*/React.createElement("span", {
+      "aria-live": "polite",
       style: {
         marginLeft: 'auto',
         fontSize: 10,
-        color: 'var(--text3)',
-        fontStyle: 'italic'
+        color: revealedLegend ? 'var(--gold)' : 'var(--text3)',
+        fontStyle: revealedLegend ? 'normal' : 'italic',
+        fontWeight: revealedLegend ? 600 : 400,
+        transition: T_V2.motion ? 'color 180ms ease' : 'none'
       }
-    }, "Hover a code for full name")), hasInsurance && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    }, revealedLegend || 'Tap a code for full name')), hasInsurance && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         alignItems: 'center',
@@ -68899,223 +69063,251 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
       style: {
         width: 32
       }
-    }), /*#__PURE__*/React.createElement("col", null), /*#__PURE__*/React.createElement("col", {
+    }), /*#__PURE__*/React.createElement("col", null), !isMobile && /*#__PURE__*/React.createElement("col", {
       style: {
         width: '14%'
       }
     }), /*#__PURE__*/React.createElement("col", {
       style: {
-        width: '12%'
+        width: isMobile ? '32%' : '12%'
       }
-    }), /*#__PURE__*/React.createElement("col", {
+    }), !isMobile && /*#__PURE__*/React.createElement("col", {
       style: {
         width: '13%'
       }
     }), /*#__PURE__*/React.createElement("col", {
       style: {
-        width: '14%'
+        width: isMobile ? '28%' : '14%'
       }
     }), /*#__PURE__*/React.createElement("col", {
       style: {
-        width: 90
+        width: isMobile ? 64 : 90
       }
-    })), insGroups.map(group => /*#__PURE__*/React.createElement(React.Fragment, {
-      key: group.id
-    }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
-      colSpan: 7,
-      style: {
-        padding: '10px 8px 6px',
-        background: 'var(--bg2)',
-        borderBottom: '2px solid ' + group.color,
-        fontSize: 0
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6
-      }
-    }, /*#__PURE__*/React.createElement("input", {
-      type: "checkbox",
-      checked: group.items.every(p => selected.has(p.id)) && group.items.length > 0,
-      onChange: () => {
-        const ids = group.items.map(p => p.id);
-        const allSel = ids.every(id => selected.has(id));
-        setSelected(prev => {
-          const n = new Set(prev);
-          ids.forEach(id => allSel ? n.delete(id) : n.add(id));
-          return n;
-        });
-      },
-      style: {
-        accentColor: 'var(--gold)'
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700,
-        color: group.color
-      }
-    }, group.icon, " ", group.sub), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text3)',
-        fontWeight: 400
-      }
-    }, "(", group.items.length, ")"))))), /*#__PURE__*/React.createElement("tr", {
-      style: {
-        fontSize: 10,
-        color: 'var(--text3)',
-        textTransform: 'uppercase',
-        letterSpacing: '.5px'
-      }
-    }, /*#__PURE__*/React.createElement("th", {
-      style: {
-        width: 32
-      }
-    }), /*#__PURE__*/React.createElement("th", {
-      style: {
-        textAlign: 'left'
-      }
-    }, "Policy"), /*#__PURE__*/React.createElement("th", null, "Sub-type"), /*#__PURE__*/React.createElement("th", null, "Insurer/Platform"), /*#__PURE__*/React.createElement("th", {
-      style: {
-        textAlign: 'right'
-      }
-    }, "Sum Assured"), /*#__PURE__*/React.createElement("th", {
-      style: {
-        textAlign: 'right'
-      }
-    }, "Premium"), /*#__PURE__*/React.createElement("th", null, "Actions"))), /*#__PURE__*/React.createElement("tbody", null, group.items.map(p => {
-      const bens = benIcons(p);
-      return /*#__PURE__*/React.createElement("tr", {
-        key: p.id,
-        style: flashRowStyle(p.id)
-      }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
+    })), insGroups.map(group => {
+      const colSpan = isMobile ? 5 : 7;
+      return /*#__PURE__*/React.createElement(React.Fragment, {
+        key: group.id
+      }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+        colSpan: colSpan,
+        style: {
+          padding: '10px 8px 6px',
+          background: 'var(--bg2)',
+          borderBottom: '2px solid ' + group.color,
+          fontSize: 0
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6
+        }
+      }, /*#__PURE__*/React.createElement("input", {
         type: "checkbox",
-        checked: selected.has(p.id),
-        onChange: () => toggleSelect(p.id),
-        style: {
-          accentColor: 'var(--gold)'
-        }
-      })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontWeight: 500
-        }
-      }, p.policyName || p.productName || 'Unnamed'), p.policyNumber && /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontSize: 10,
-          color: 'var(--text3)'
-        }
-      }, p.policyNumber), p.userRemarks && /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontSize: 9,
-          color: 'var(--gold)',
-          fontStyle: 'italic',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 3
-        }
-      }, "\"", p.userRemarks.length > 35 ? p.userRemarks.substring(0, 35) + '…' : p.userRemarks, "\" ", /*#__PURE__*/React.createElement("span", {
-        style: {
-          cursor: 'pointer',
-          fontSize: 7,
-          opacity: .5
-        },
-        onClick: e => {
-          e.stopPropagation();
-          savePolicy({
-            ...p,
-            userRemarks: ''
+        "aria-label": 'Select all ' + group.sub + ' policies (' + group.items.length + ')',
+        title: 'Select all ' + group.sub + ' policies',
+        checked: group.items.every(p => selected.has(p.id)) && group.items.length > 0,
+        onChange: () => {
+          const ids = group.items.map(p => p.id);
+          const allSel = ids.every(id => selected.has(id));
+          setSelected(prev => {
+            const n = new Set(prev);
+            ids.forEach(id => allSel ? n.delete(id) : n.add(id));
+            return n;
           });
-        }
-      }, "\u2715")), /*#__PURE__*/React.createElement("div", {
+        },
         style: {
-          display: 'flex',
-          gap: 3,
-          marginTop: 2,
-          alignItems: 'center',
-          flexWrap: 'wrap'
+          accentColor: 'var(--gold)',
+          width: 18,
+          height: 18,
+          cursor: 'pointer'
         }
-      }, bens.length > 0 && bens.map((b, i) => /*#__PURE__*/React.createElement("span", {
-        key: i,
+      }), /*#__PURE__*/React.createElement("span", {
         style: {
-          fontSize: 7,
+          fontSize: 13,
           fontWeight: 700,
-          padding: '1px 3px',
-          borderRadius: 3,
-          background: b.c + '22',
-          color: b.c
+          color: group.color
         }
-      }, b.l)), p.lifeInsured && p.lifeInsured.trim() && (() => {
-        const liDisplay = cleanPersonDisplayName(p.lifeInsured);
-        return /*#__PURE__*/React.createElement("span", {
-          title: 'Life Assured: ' + liDisplay,
-          style: {
-            fontSize: 8,
-            fontWeight: 600,
-            padding: '1px 5px',
-            borderRadius: 3,
-            background: 'var(--gold-dim)',
-            color: 'var(--gold)',
-            border: '1px solid color-mix(in oklch, var(--gold) 35%, transparent)',
-            maxWidth: 100,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }
-        }, "LA: ", liDisplay);
-      })(), p.status && p.status !== 'inforce' && (() => {
-        const sb = STATUS_BADGES.find(x => x.code === p.status);
-        const c = sb?.color || 'var(--text3)';
-        const lbl = sb?.label || p.status.charAt(0).toUpperCase() + p.status.slice(1);
-        return /*#__PURE__*/React.createElement("span", {
-          title: 'Status: ' + lbl,
-          style: {
-            fontSize: 8,
-            fontWeight: 600,
-            padding: '1px 5px',
-            borderRadius: 3,
-            background: c + '22',
-            color: c,
-            border: `1px solid ${c}40`
-          }
-        }, lbl);
-      })(), p.excludeFromRetirement && /*#__PURE__*/React.createElement("span", {
-        title: "Excluded from retirement plan calculations",
-        style: {
-          fontSize: 8,
-          fontWeight: 700,
-          padding: '1px 5px',
-          borderRadius: 3,
-          background: 'rgba(244,63,94,.12)',
-          color: '#dc2626',
-          border: '1px solid rgba(244,63,94,.25)'
-        }
-      }, "\uD83D\uDEAB Not in retirement"))), /*#__PURE__*/React.createElement("td", {
+      }, group.icon, " ", group.sub), /*#__PURE__*/React.createElement("span", {
         style: {
           fontSize: 11,
-          color: 'var(--text2)'
+          color: 'var(--text3)',
+          fontWeight: 400
         }
-      }, p.subType === 'Integrated Shield Plan' && p.hasRider ? 'ISP + Rider' : p.subType || '—'), /*#__PURE__*/React.createElement("td", null, p.insurer ? /*#__PURE__*/React.createElement(InsurerBadge, {
-        name: p.insurer
-      }) : '—'), /*#__PURE__*/React.createElement("td", {
-        className: "mono",
+      }, "(", group.items.length, ")"))))), /*#__PURE__*/React.createElement("tr", {
+        style: {
+          fontSize: 10,
+          color: 'var(--text3)',
+          textTransform: 'uppercase',
+          letterSpacing: '.5px'
+        }
+      }, /*#__PURE__*/React.createElement("th", {
+        style: {
+          width: 32
+        }
+      }), /*#__PURE__*/React.createElement("th", {
+        style: {
+          textAlign: 'left'
+        }
+      }, "Policy"), !isMobile && /*#__PURE__*/React.createElement("th", null, "Sub-type"), /*#__PURE__*/React.createElement("th", null, isMobile ? 'Insurer' : 'Insurer/Platform'), !isMobile && /*#__PURE__*/React.createElement("th", {
         style: {
           textAlign: 'right'
         }
-      }, fmt(p.sumAssured, p.currency || 'SGD')), /*#__PURE__*/React.createElement("td", {
-        className: "mono",
+      }, "Sum Assured"), /*#__PURE__*/React.createElement("th", {
         style: {
           textAlign: 'right'
         }
-      }, premCell(p)), /*#__PURE__*/React.createElement("td", null, actions(p)));
-    }))))))), hasFI && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      }, "Premium"), /*#__PURE__*/React.createElement("th", null, isMobile ? '' : 'Actions'))), /*#__PURE__*/React.createElement("tbody", null, group.items.map(p => {
+        const bens = benIcons(p);
+        const subTypeText = p.subType === 'Integrated Shield Plan' && p.hasRider ? 'ISP + Rider' : p.subType || '—';
+        return /*#__PURE__*/React.createElement("tr", {
+          key: p.id,
+          style: flashRowStyle(p.id)
+        }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
+          type: "checkbox",
+          "aria-label": 'Select ' + (p.policyName || p.productName || 'policy'),
+          checked: selected.has(p.id),
+          onChange: () => toggleSelect(p.id),
+          style: {
+            accentColor: 'var(--gold)'
+          }
+        })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
+          style: {
+            fontWeight: 500
+          }
+        }, p.policyName || p.productName || 'Unnamed'), isMobile && subTypeText !== '—' && /*#__PURE__*/React.createElement("div", {
+          style: {
+            fontSize: 10,
+            color: 'var(--text3)',
+            marginTop: 1
+          }
+        }, subTypeText), p.policyNumber && /*#__PURE__*/React.createElement("div", {
+          style: {
+            fontSize: 10,
+            color: 'var(--text3)'
+          }
+        }, p.policyNumber), p.userRemarks && /*#__PURE__*/React.createElement("div", {
+          style: {
+            fontSize: 9,
+            color: 'var(--gold)',
+            fontStyle: 'italic',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3
+          }
+        }, "\"", p.userRemarks.length > 35 ? p.userRemarks.substring(0, 35) + '…' : p.userRemarks, "\" ", /*#__PURE__*/React.createElement("span", {
+          style: {
+            cursor: 'pointer',
+            fontSize: 7,
+            opacity: .5
+          },
+          onClick: e => {
+            e.stopPropagation();
+            savePolicy({
+              ...p,
+              userRemarks: ''
+            });
+          }
+        }, "\u2715")), /*#__PURE__*/React.createElement("div", {
+          style: {
+            display: 'flex',
+            gap: 3,
+            marginTop: 2,
+            alignItems: 'center',
+            flexWrap: 'wrap'
+          }
+        }, bens.length > 0 && bens.map((b, i) => /*#__PURE__*/React.createElement("span", {
+          key: i,
+          style: {
+            fontSize: 7,
+            fontWeight: 700,
+            padding: '1px 3px',
+            borderRadius: 3,
+            background: b.c + '22',
+            color: b.c
+          }
+        }, b.l)), p.lifeInsured && p.lifeInsured.trim() && (() => {
+          const liDisplay = cleanPersonDisplayName(p.lifeInsured);
+          return /*#__PURE__*/React.createElement("span", {
+            title: 'Life Assured: ' + liDisplay,
+            style: {
+              fontSize: 8,
+              fontWeight: 600,
+              padding: '1px 5px',
+              borderRadius: 3,
+              background: 'var(--gold-dim)',
+              color: 'var(--gold)',
+              border: '1px solid color-mix(in oklch, var(--gold) 35%, transparent)',
+              maxWidth: 100,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }
+          }, "LA: ", liDisplay);
+        })(), p.status && p.status !== 'inforce' && (() => {
+          const sb = STATUS_BADGES.find(x => x.code === p.status);
+          const c = sb?.color || 'var(--text3)';
+          const lbl = sb?.label || p.status.charAt(0).toUpperCase() + p.status.slice(1);
+          return /*#__PURE__*/React.createElement("span", {
+            title: 'Status: ' + lbl,
+            style: {
+              fontSize: 8,
+              fontWeight: 600,
+              padding: '1px 5px',
+              borderRadius: 3,
+              background: c + '22',
+              color: c,
+              border: `1px solid ${c}40`
+            }
+          }, lbl);
+        })(), p.excludeFromRetirement && /*#__PURE__*/React.createElement("span", {
+          title: "Excluded from retirement plan calculations",
+          style: {
+            fontSize: 8,
+            fontWeight: 700,
+            padding: '1px 5px',
+            borderRadius: 3,
+            background: 'rgba(244,63,94,.12)',
+            color: '#dc2626',
+            border: '1px solid rgba(244,63,94,.25)'
+          }
+        }, "\uD83D\uDEAB Not in retirement"), isMobile && p.sumAssured && parseFloat(p.sumAssured) > 0 && /*#__PURE__*/React.createElement("span", {
+          title: "Sum Assured",
+          style: {
+            fontSize: 8,
+            fontWeight: 600,
+            padding: '1px 5px',
+            borderRadius: 3,
+            background: 'var(--bg3)',
+            color: 'var(--text3)',
+            border: '1px solid var(--border)'
+          },
+          className: "mono"
+        }, "SA ", fmt(p.sumAssured, p.currency || 'SGD')))), !isMobile && /*#__PURE__*/React.createElement("td", {
+          style: {
+            fontSize: 11,
+            color: 'var(--text2)'
+          }
+        }, subTypeText), /*#__PURE__*/React.createElement("td", null, p.insurer ? /*#__PURE__*/React.createElement(InsurerBadge, {
+          name: p.insurer
+        }) : '—'), !isMobile && /*#__PURE__*/React.createElement("td", {
+          className: "mono",
+          style: {
+            textAlign: 'right'
+          }
+        }, fmt(p.sumAssured, p.currency || 'SGD')), /*#__PURE__*/React.createElement("td", {
+          className: "mono",
+          style: {
+            textAlign: 'right'
+          }
+        }, premCell(p)), /*#__PURE__*/React.createElement("td", null, actions(p)));
+      })));
+    })))), hasFI && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         alignItems: 'center',
@@ -69150,25 +69342,25 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
       style: {
         width: 32
       }
-    }), /*#__PURE__*/React.createElement("col", null), /*#__PURE__*/React.createElement("col", {
+    }), /*#__PURE__*/React.createElement("col", null), !isMobile && /*#__PURE__*/React.createElement("col", {
       style: {
         width: '14%'
       }
     }), /*#__PURE__*/React.createElement("col", {
       style: {
+        width: isMobile ? '28%' : '12%'
+      }
+    }), /*#__PURE__*/React.createElement("col", {
+      style: {
+        width: isMobile ? '28%' : '13%'
+      }
+    }), !isMobile && /*#__PURE__*/React.createElement("col", {
+      style: {
         width: '12%'
       }
     }), /*#__PURE__*/React.createElement("col", {
       style: {
-        width: '13%'
-      }
-    }), /*#__PURE__*/React.createElement("col", {
-      style: {
-        width: '12%'
-      }
-    }), /*#__PURE__*/React.createElement("col", {
-      style: {
-        width: 90
+        width: isMobile ? 64 : 90
       }
     })), /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
       style: {
@@ -69183,6 +69375,8 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
       }
     }, /*#__PURE__*/React.createElement("input", {
       type: "checkbox",
+      "aria-label": "Select all Fixed Deposits / Bonds",
+      title: "Select all Fixed Deposits / Bonds",
       checked: fiItems.every(p => selected.has(p.id)) && fiItems.length > 0,
       onChange: () => {
         const ids = fiItems.map(p => p.id);
@@ -69194,25 +69388,29 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
         });
       },
       style: {
-        accentColor: 'var(--gold)'
+        accentColor: 'var(--gold)',
+        width: 18,
+        height: 18,
+        cursor: 'pointer'
       }
     })), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: 'left'
       }
-    }, "Instrument"), /*#__PURE__*/React.createElement("th", null, "Type"), /*#__PURE__*/React.createElement("th", null, "Bank"), /*#__PURE__*/React.createElement("th", {
+    }, "Instrument"), !isMobile && /*#__PURE__*/React.createElement("th", null, "Type"), /*#__PURE__*/React.createElement("th", null, "Bank"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: 'right'
       }
-    }, "Principal"), /*#__PURE__*/React.createElement("th", {
+    }, "Principal"), !isMobile && /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: 'right'
       }
-    }, "Yield"), /*#__PURE__*/React.createElement("th", null, "Actions"))), /*#__PURE__*/React.createElement("tbody", null, fiItems.sort((a, b) => (a.insurer || '').localeCompare(b.insurer || '')).map(p => /*#__PURE__*/React.createElement("tr", {
+    }, "Yield"), /*#__PURE__*/React.createElement("th", null, isMobile ? '' : 'Actions'))), /*#__PURE__*/React.createElement("tbody", null, fiItems.sort((a, b) => (a.insurer || '').localeCompare(b.insurer || '')).map(p => /*#__PURE__*/React.createElement("tr", {
       key: p.id,
       style: flashRowStyle(p.id)
     }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
       type: "checkbox",
+      "aria-label": 'Select ' + (p.productName || p.policyName || p.subType || 'instrument'),
       checked: selected.has(p.id),
       onChange: () => toggleSelect(p.id),
       style: {
@@ -69222,7 +69420,23 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
       style: {
         fontWeight: 500
       }
-    }, p.productName || p.policyName || p.subType || 'Unnamed'), p.userRemarks && /*#__PURE__*/React.createElement("div", {
+    }, p.productName || p.policyName || p.subType || 'Unnamed'), isMobile && p.subType && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: 'var(--text3)',
+        marginTop: 1
+      }
+    }, p.subType || 'FD'), isMobile && p.fdYieldPct && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        marginTop: 1
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: 'var(--green2)',
+        fontWeight: 600
+      }
+    }, p.fdYieldPct, "% yield")), p.userRemarks && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         color: 'var(--gold)',
@@ -69237,7 +69451,7 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
       day: 'numeric',
       month: 'short',
       year: '2-digit'
-    }))), /*#__PURE__*/React.createElement("td", {
+    }))), !isMobile && /*#__PURE__*/React.createElement("td", {
       style: {
         fontSize: 11,
         color: 'var(--text2)'
@@ -69249,7 +69463,7 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
       style: {
         textAlign: 'right'
       }
-    }, p.fdPrincipal ? '$' + parseInt(p.fdPrincipal).toLocaleString() : '—'), /*#__PURE__*/React.createElement("td", {
+    }, p.fdPrincipal ? '$' + parseInt(p.fdPrincipal).toLocaleString() : '—'), !isMobile && /*#__PURE__*/React.createElement("td", {
       className: "mono",
       style: {
         textAlign: 'right'
@@ -69294,25 +69508,25 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
       style: {
         width: 32
       }
-    }), /*#__PURE__*/React.createElement("col", null), /*#__PURE__*/React.createElement("col", {
+    }), /*#__PURE__*/React.createElement("col", null), !isMobile && /*#__PURE__*/React.createElement("col", {
       style: {
         width: '14%'
       }
     }), /*#__PURE__*/React.createElement("col", {
       style: {
+        width: isMobile ? '28%' : '12%'
+      }
+    }), /*#__PURE__*/React.createElement("col", {
+      style: {
+        width: isMobile ? '28%' : '13%'
+      }
+    }), !isMobile && /*#__PURE__*/React.createElement("col", {
+      style: {
         width: '12%'
       }
     }), /*#__PURE__*/React.createElement("col", {
       style: {
-        width: '13%'
-      }
-    }), /*#__PURE__*/React.createElement("col", {
-      style: {
-        width: '12%'
-      }
-    }), /*#__PURE__*/React.createElement("col", {
-      style: {
-        width: 90
+        width: isMobile ? 64 : 90
       }
     })), /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
       style: {
@@ -69329,52 +69543,69 @@ If you cannot extract ANY policies from the image (blank page, irrelevant photo,
       style: {
         textAlign: 'left'
       }
-    }, "Asset"), /*#__PURE__*/React.createElement("th", null, "Type"), /*#__PURE__*/React.createElement("th", null, "Provider"), /*#__PURE__*/React.createElement("th", {
+    }, "Asset"), !isMobile && /*#__PURE__*/React.createElement("th", null, "Type"), /*#__PURE__*/React.createElement("th", null, "Provider"), /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: 'right'
       }
-    }, "Value"), /*#__PURE__*/React.createElement("th", {
+    }, "Value"), !isMobile && /*#__PURE__*/React.createElement("th", {
       style: {
         textAlign: 'right'
       }
-    }, "Yield / Return"), /*#__PURE__*/React.createElement("th", null, "Actions"))), /*#__PURE__*/React.createElement("tbody", null, otherItems.sort((a, b) => (a.subType || '').localeCompare(b.subType || '')).map(p => /*#__PURE__*/React.createElement("tr", {
-      key: p.id,
-      style: flashRowStyle(p.id)
-    }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
-      type: "checkbox",
-      checked: selected.has(p.id),
-      onChange: () => toggleSelect(p.id),
-      style: {
-        accentColor: 'var(--gold)'
-      }
-    })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontWeight: 500
-      }
-    }, p.productName || p.policyName || 'Unnamed'), p.userRemarks && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 9,
-        color: 'var(--gold)',
-        fontStyle: 'italic'
-      }
-    }, "\"", p.userRemarks.length > 35 ? p.userRemarks.substring(0, 35) + '…' : p.userRemarks, "\"")), /*#__PURE__*/React.createElement("td", {
-      style: {
-        fontSize: 11,
-        color: 'var(--text2)'
-      }
-    }, p.subType || '—'), /*#__PURE__*/React.createElement("td", null, p.insurer ? /*#__PURE__*/React.createElement(InsurerBadge, {
-      name: p.insurer
-    }) : '—'), /*#__PURE__*/React.createElement("td", {
-      className: "mono",
-      style: {
-        textAlign: 'right'
-      }
-    }, p.fdPrincipal ? '$' + parseInt(p.fdPrincipal).toLocaleString() : p.sumAssured ? fmt(p.sumAssured) : p.annualPremium ? fmt(p.annualPremium) : '—'), /*#__PURE__*/React.createElement("td", {
-      className: "mono",
-      style: {
-        textAlign: 'right'
-      }
-    }, p.fdYieldPct ? p.fdYieldPct + '%' : p.retAccumYield ? p.retAccumYield + '%' : '—'), /*#__PURE__*/React.createElement("td", null, actions(p)))))))));
+    }, "Yield / Return"), /*#__PURE__*/React.createElement("th", null, isMobile ? '' : 'Actions'))), /*#__PURE__*/React.createElement("tbody", null, otherItems.sort((a, b) => (a.subType || '').localeCompare(b.subType || '')).map(p => {
+      const yieldText = p.fdYieldPct ? p.fdYieldPct + '%' : p.retAccumYield ? p.retAccumYield + '%' : '';
+      return /*#__PURE__*/React.createElement("tr", {
+        key: p.id,
+        style: flashRowStyle(p.id)
+      }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
+        type: "checkbox",
+        "aria-label": 'Select ' + (p.productName || p.policyName || 'asset'),
+        checked: selected.has(p.id),
+        onChange: () => toggleSelect(p.id),
+        style: {
+          accentColor: 'var(--gold)'
+        }
+      })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontWeight: 500
+        }
+      }, p.productName || p.policyName || 'Unnamed'), isMobile && p.subType && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 10,
+          color: 'var(--text3)',
+          marginTop: 1
+        }
+      }, p.subType), isMobile && yieldText && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 10,
+          color: 'var(--green2)',
+          fontWeight: 600,
+          marginTop: 1
+        }
+      }, yieldText, " yield"), p.userRemarks && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 9,
+          color: 'var(--gold)',
+          fontStyle: 'italic'
+        }
+      }, "\"", p.userRemarks.length > 35 ? p.userRemarks.substring(0, 35) + '…' : p.userRemarks, "\"")), !isMobile && /*#__PURE__*/React.createElement("td", {
+        style: {
+          fontSize: 11,
+          color: 'var(--text2)'
+        }
+      }, p.subType || '—'), /*#__PURE__*/React.createElement("td", null, p.insurer ? /*#__PURE__*/React.createElement(InsurerBadge, {
+        name: p.insurer
+      }) : '—'), /*#__PURE__*/React.createElement("td", {
+        className: "mono",
+        style: {
+          textAlign: 'right'
+        }
+      }, p.fdPrincipal ? '$' + parseInt(p.fdPrincipal).toLocaleString() : p.sumAssured ? fmt(p.sumAssured) : p.annualPremium ? fmt(p.annualPremium) : '—'), !isMobile && /*#__PURE__*/React.createElement("td", {
+        className: "mono",
+        style: {
+          textAlign: 'right'
+        }
+      }, yieldText || '—'), /*#__PURE__*/React.createElement("td", null, actions(p)));
+    }))))));
   })(), maturedPolicies.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 16
