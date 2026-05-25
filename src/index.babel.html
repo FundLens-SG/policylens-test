@@ -32243,7 +32243,13 @@ function ClientContextHeader() {
             takes the space it needs; chips now cluster left like a normal
             chip row. Still allowed to shrink for narrow viewports. */}
         <div style={{minWidth:0,flex:'0 1 auto',maxWidth:'100%',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-          <span style={{fontFamily:T_V2.serifFamily,fontSize:16,color:'var(--text)',fontWeight:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:260}}>{summary.clientName}</span>
+          {/* v2.4.0-rc1.87: responsive maxWidth so long names like
+              "Sophia Yeo Hui Kuan (yang Huijuan)" aren't clipped on desktop.
+              Scales with viewport (60vw up to 520px); on a 360px phone =
+              ~216px, on a 1280px desktop = 520px. `title` ensures the full
+              name is still reachable via hover/long-press if it does clip. */}
+          <span title={summary.clientName}
+            style={{fontFamily:T_V2.serifFamily,fontSize:16,color:'var(--text)',fontWeight:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'min(520px, 60vw)'}}>{summary.clientName}</span>
           <span style={{fontSize:10,color:'var(--text3)',border:'1px solid var(--border)',background:'var(--bg2)',borderRadius:999,padding:'3px 8px',fontWeight:700}}>{summary.tier || 'Unassigned'}</span>
           <span style={{fontSize:11,color:'var(--text3)'}}>{ageLabel}</span>
           {/* OK-path sync state collapses to a tiny ✓ dot next to the name so

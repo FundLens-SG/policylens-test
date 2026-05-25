@@ -39349,6 +39349,7 @@ function ClientContextHeader() {
       flexWrap: 'wrap'
     }
   }, /*#__PURE__*/React.createElement("span", {
+    title: summary.clientName,
     style: {
       fontFamily: T_V2.serifFamily,
       fontSize: 16,
@@ -39357,7 +39358,7 @@ function ClientContextHeader() {
       whiteSpace: 'nowrap',
       overflow: 'hidden',
       textOverflow: 'ellipsis',
-      maxWidth: 260
+      maxWidth: 'min(520px, 60vw)'
     }
   }, summary.clientName), /*#__PURE__*/React.createElement("span", {
     style: {
