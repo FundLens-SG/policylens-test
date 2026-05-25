@@ -26306,6 +26306,18 @@ async function sbRepoLoad() {
 }
 async function sbRepoSave(item) {
   _ckgSaveStarted();
+  // v2.4.0-rc1.88: ALWAYS mirror to IndexedDB first. Repo rows are ~3KB
+  // each so the local write is cheap, and it gives us a safety net if
+  // Supabase ever wipes/migrates/is unreachable. Without this, a user
+  // could lose their accumulated stack the way chungakwanc@ did in
+  // Phase 7A (Supabase had data, IDB only had pre-Phase-7A seeds —
+  // and when the boot's Supabase load missed its session-ready
+  // window, the UI fell back to the seed snapshot).
+  try {
+    await dbPut('repository', item);
+  } catch (idbErr) {
+    console.warn('[Repo] IDB backup failed:', idbErr?.message);
+  }
   try {
     const s = getSB();
     if (!s) {
@@ -30266,38 +30278,105 @@ function App() {
       } else {
         setRepo(rs);
       }
-      runAfterFirstPaint(async () => {
-        // Load repository from Supabase (primary) with local fallback
-        // Only try Supabase if user is authenticated (session exists)
+
+      // v2.4.0-rc1.88: robust Supabase repo loader.
+      //
+      // Old code was single-shot at first-paint+1200ms. If the hub
+      // OAuth session hadn't settled by that moment, hasSession=false,
+      // no Supabase call, no retry — user permanently stranded on the
+      // local IDB seed snapshot (e.g. 61 entries) while their actual
+      // cloud stack (386 entries) sat ignored. Symptom: header reads
+      // "Local only" instead of "Shared library" and never recovers
+      // without a manual Sync button click.
+      //
+      // New strategy:
+      //   1. Try at +1200ms. If session not ready / load fails, retry
+      //      at +4s and +10s with the same logic.
+      //   2. ALSO subscribe to sb.auth.onAuthStateChange — if the hub
+      //      session signs in or refreshes a token AFTER boot, fire
+      //      the load immediately. This catches the case where boot
+      //      completed before OAuth resolved.
+      //   3. Backfill (E4): when Supabase load succeeds, diff the IDB
+      //      against cloud and push any IDB-only rows up. Protects
+      //      against the inverse case where the user saved while
+      //      repoSource='local' (writes went only to IDB).
+      let _repoSupabaseLoaded = false;
+      const _tryLoadRepoFromSupabase = async tag => {
+        if (_repoSupabaseLoaded) return true;
         const s = getSB();
+        if (!s) return false;
         let hasSession = false;
-        if (s) {
-          try {
-            const sess = await s.auth.getSession();
-            hasSession = !!sess?.data?.session;
-          } catch (e) {}
+        try {
+          const sess = await s.auth.getSession();
+          hasSession = !!sess?.data?.session;
+        } catch (e) {
+          return false;
         }
-        let repoData = hasSession ? await sbRepoLoad() : null;
-        if (repoData !== null) {
-          setRepoSource('supabase');
-          // Merge: ensure seed products exist in Supabase (add missing, never overwrite)
-          const sbIds = new Set(repoData.map(r => r.id));
-          const sbNames = new Set(repoData.map(r => (r.insurer || '') + '|' + (r.productName || '')));
-          let seeded = 0;
-          for (const seed of SEED_REPOSITORY) {
-            if (!sbIds.has(seed.id) && !sbNames.has(seed.insurer + '|' + seed.productName)) {
-              await sbRepoSave(seed);
-              repoData.push(seed);
-              seeded++;
-            }
+        if (!hasSession) return false;
+        const repoData = await sbRepoLoad();
+        if (repoData === null) return false;
+        // IDB → Supabase backfill BEFORE we set state, so the array we
+        // hand to setRepo already includes any IDB-only entries.
+        try {
+          const idbRows = await dbGetAll('repository').catch(() => []);
+          const cloudIds = new Set(repoData.map(r => r.id));
+          const cloudNames = new Set(repoData.map(r => (r.insurer || '') + '|' + (r.productName || '')));
+          let backfilled = 0;
+          for (const idb of idbRows || []) {
+            if (!idb?.id) continue;
+            if (cloudIds.has(idb.id)) continue;
+            if (cloudNames.has((idb.insurer || '') + '|' + (idb.productName || ''))) continue;
+            await sbRepoSave(idb);
+            repoData.push(idb);
+            backfilled++;
           }
-          if (seeded) console.log('[Repo] Seeded', seeded, 'missing products to Supabase');
-          setRepo(repoData);
-          console.log('[Repo] Loaded', repoData.length, 'products from Supabase');
-        } else {
-          console.log('[Repo] Using local IndexedDB during startup');
+          if (backfilled) console.log('[Repo] Backfilled', backfilled, 'IDB-only entries to Supabase');
+        } catch (bfErr) {
+          console.warn('[Repo] Backfill skipped:', bfErr?.message);
         }
+        // Merge: ensure seed products exist in Supabase (add missing, never overwrite)
+        const sbIds = new Set(repoData.map(r => r.id));
+        const sbNames = new Set(repoData.map(r => (r.insurer || '') + '|' + (r.productName || '')));
+        let seeded = 0;
+        for (const seed of SEED_REPOSITORY) {
+          if (!sbIds.has(seed.id) && !sbNames.has(seed.insurer + '|' + seed.productName)) {
+            await sbRepoSave(seed);
+            repoData.push(seed);
+            seeded++;
+          }
+        }
+        if (seeded) console.log('[Repo] Seeded', seeded, 'missing products to Supabase');
+        setRepoSource('supabase');
+        setRepo(repoData);
+        _repoSupabaseLoaded = true;
+        console.log('[Repo] Loaded', repoData.length, 'products from Supabase (' + (tag || 'boot') + ')');
+        return true;
+      };
+      runAfterFirstPaint(async () => {
+        if (await _tryLoadRepoFromSupabase('attempt 1')) return;
+        console.log('[Repo] Attempt 1 failed (session likely not ready); retrying in 4s');
+        setTimeout(async () => {
+          if (await _tryLoadRepoFromSupabase('attempt 2')) return;
+          console.log('[Repo] Attempt 2 failed; retrying in 10s');
+          setTimeout(async () => {
+            if (await _tryLoadRepoFromSupabase('attempt 3')) return;
+            console.warn('[Repo] All boot retries failed — user on local seeds. Manual Sync button still works.');
+          }, 10000);
+        }, 4000);
       }, 1200);
+
+      // Auth-state-change listener — catches the case where OAuth
+      // resolves AFTER all our retries have given up.
+      try {
+        const _sbAuth = getSB();
+        _sbAuth?.auth?.onAuthStateChange((event, _session) => {
+          if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+            _tryLoadRepoFromSupabase('auth-' + event).catch(() => {});
+          }
+        });
+      } catch (authSubErr) {
+        console.warn('[Repo] auth subscribe skipped:', authSubErr?.message);
+      }
       runAfterFirstPaint(() => {
         sbCrmPeopleMirrorPolicyLensClients('startup').catch(e => console.warn('[CRMLensSync] startup client mirror failed:', e?.message || e));
       }, 1800);
@@ -32011,13 +32090,15 @@ function App() {
     }
     setRepo(prev => prev.filter(x => x.id !== id));
   };
-  // Force refresh from Supabase
+  // Force refresh from Supabase. v2.4.0-rc1.88: returns the loaded
+  // row count on success (or false on failure) so the calling button
+  // can toast the actual fresh count instead of the stale `repo.length`.
   const refreshRepo = async () => {
     const data = await sbRepoLoad();
     if (data !== null) {
       setRepo(data);
       setRepoSource('supabase');
-      return true;
+      return data.length;
     }
     return false;
   };
@@ -79509,11 +79590,12 @@ function Repository() {
     }
   }), refreshRepo && /*#__PURE__*/React.createElement("button", {
     disabled: syncing,
+    title: "Re-fetch the full product library from cloud. Use this if your library looks incomplete.",
     onClick: async () => {
       setSyncing(true);
-      const ok = await refreshRepo();
+      const n = await refreshRepo();
       setSyncing(false);
-      if (ok) toast('Synced ' + repo.length + ' products from cloud', 'success');else toast('Sync failed — check connection', 'error');
+      if (n !== false) toast('Synced ' + n + ' products from cloud', 'success');else toast('Sync failed — check connection or sign in again', 'error');
     },
     style: {
       height: 32,
@@ -79532,7 +79614,7 @@ function Repository() {
       transition: 'all 180ms ease',
       opacity: syncing ? 0.6 : 1
     }
-  }, syncing ? 'Syncing…' : '⟲ Sync from Drive'))), /*#__PURE__*/React.createElement(DropZone, {
+  }, syncing ? 'Syncing…' : '⟲ Sync from Cloud'))), /*#__PURE__*/React.createElement(DropZone, {
     active: true,
     onFiles: handleRepoDrop,
     label: repoScanning ? "🔄 Scanning documents for products..." : "📎 Drop product summaries, benefit illustrations, or policy documents here to add to the repository"
