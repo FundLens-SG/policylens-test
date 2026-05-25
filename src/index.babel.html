@@ -32235,7 +32235,14 @@ function ClientContextHeader() {
             break the chip rhythm; failed/queued keep full labels because they're
             actionable. */}
       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',maxWidth:1280,margin:'0 auto'}}>
-        <div style={{minWidth:0,flex:'1 1 260px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+        {/* v2.4.0-rc1.86: name section was `flex: 1 1 260px` (grow:1) — it
+            greedily consumed all leftover row width on desktop, pushing the
+            action chips to the far-right edge. Looked fine when the Synced
+            pill was always-on at the end, but hiding it in the OK path
+            (rc1.85) left a void. Changed to `0 1 auto` so the section only
+            takes the space it needs; chips now cluster left like a normal
+            chip row. Still allowed to shrink for narrow viewports. */}
+        <div style={{minWidth:0,flex:'0 1 auto',maxWidth:'100%',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
           <span style={{fontFamily:T_V2.serifFamily,fontSize:16,color:'var(--text)',fontWeight:500,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:260}}>{summary.clientName}</span>
           <span style={{fontSize:10,color:'var(--text3)',border:'1px solid var(--border)',background:'var(--bg2)',borderRadius:999,padding:'3px 8px',fontWeight:700}}>{summary.tier || 'Unassigned'}</span>
           <span style={{fontSize:11,color:'var(--text3)'}}>{ageLabel}</span>
