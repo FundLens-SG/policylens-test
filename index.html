@@ -901,9 +901,9 @@ const {
 } = React;
 
 // ── APP VERSION (display only — NOT the extraction pipeline version) ──
-const APP_VERSION = 'v2.4.0-rc2.75.24';
-const APP_VERSION_DATE = '2026-05-21';
-const APP_VERSION_NAME = 'rc2.75.24 Policy register: coverage totals strip + short-label Type + no duplicate chip';
+const APP_VERSION = 'v2.4.0-rc2.76';
+const APP_VERSION_DATE = '2026-05-28';
+const APP_VERSION_NAME = 'rc2.76 Clients tab — Merge selected button';
 const AUTO_IMPORT_HIGH_CONFIDENCE_EXTRACTIONS = false;
 
 // ═══════════════════════════════════════════════════════════════
@@ -1508,6 +1508,14 @@ function getInitialPolicyLensTab() {
   return 'dashboard';
 }
 const CHANGELOG = [{
+  version: 'v2.4.0-rc2.76',
+  date: '2026-05-28',
+  name: 'rc2.76 Clients tab — Merge selected button',
+  sections: [{
+    heading: 'FC was looking at three duplicate Sophia rows in the Clients list, had them all checked, and asked where the merge button was. The pre-existing MergeClientModal only opens from the Profile tab / family view and only merges one source at a time. This RC adds a "⇉ Merge N selected" button to the Clients toolbar that pops alongside Reconcile whenever 2+ clients are checked.',
+    items: ['NEW — "Merge N selected" button surfaces in the Clients tab toolbar after the Reconcile button when selectedStates.length >= 2. Coral accent to match other destructive-but-intentional actions. Hidden on mobile because the selection UI is desktop-only.', 'NEW — MergeSelectedModal lets the FC pick the survivor from the selected set via a radio list. Default survivor is the client with the most policies (tiebreak alphabetical) since that\'s almost always the canonical record after OCR duplication. Shows policy count per option so the choice is informed.', 'BEHAVIOUR — On confirm, loops mergeClientIntoClient(other, survivor) for each non-survivor in the selection. Errors per-pair are caught so one bad merge doesn\'t abandon the batch. Summary toast at the end reports successes + failures + total policies migrated. Selection is cleared on success; preserved on full failure so the FC can retry.', 'WHY: Today\'s Sophia investigation found the duplicate detection working correctly but the merge UI was only reachable via the single-client Profile tab — meaning the FC had to repeat the merge UI N-1 times for a group of N dupes. Selection-driven merge collapses that into one decision.']
+  }]
+}, {
   version: 'v2.4.0-rc2.75.24',
   date: '2026-05-21',
   name: 'rc2.75.24 Policy register — coverage totals strip + short-label Type column + drop duplicate chip',
@@ -35964,6 +35972,12 @@ function ClientsTab() {
   // v2.4.0-rc1.52: family-view merge modal — source client + open flag
   const [familyMergeOpen, setFamilyMergeOpen] = useState(false);
   const [familyMergeSource, setFamilyMergeSource] = useState(null);
+  // v2.4.0-rc2.76: selection-driven merge — opens a small modal when
+  // the FC has 2+ clients checked in the list and clicks "Merge selected".
+  // Picks one as the survivor, then loops mergeClientIntoClient() for
+  // the others. The existing MergeClientModal only handles one source
+  // at a time and is opened from the Profile tab / family view.
+  const [mergeSelectedOpen, setMergeSelectedOpen] = useState(false);
   // rc2.20 — "+ New client" dropdown: lets the FC kick off a new client
   // either manually (existing flow) OR by scanning a document/gallery/photo,
   // which routes the extraction through the Policies tab pipeline and
@@ -37353,7 +37367,22 @@ function ClientsTab() {
       flexShrink: 0,
       whiteSpace: 'nowrap'
     }
-  }, "\u27F2 Reconcile"), /*#__PURE__*/React.createElement("div", {
+  }, "\u27F2 Reconcile"), !isMobile && selectedStates.length >= 2 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setMergeSelectedOpen(true),
+    title: 'Merge ' + selectedStates.length + ' selected clients into one',
+    style: {
+      background: 'color-mix(in oklch, var(--coral) 18%, transparent)',
+      color: 'var(--coral)',
+      border: '1px solid color-mix(in oklch, var(--coral) 48%, transparent)',
+      borderRadius: 8,
+      padding: '6px 12px',
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: 'pointer',
+      flexShrink: 0,
+      whiteSpace: 'nowrap'
+    }
+  }, "\u21C9 Merge ", selectedStates.length, " selected"), /*#__PURE__*/React.createElement("div", {
     style: {
       position: 'relative',
       flexShrink: 0
@@ -38147,6 +38176,13 @@ function ClientsTab() {
       setFamilyMergeOpen(false);
       setFamilyMergeSource(null);
     }
+  }), /*#__PURE__*/React.createElement(MergeSelectedModal, {
+    open: mergeSelectedOpen,
+    selectedStates: selectedStates,
+    onClose: shouldClear => {
+      setMergeSelectedOpen(false);
+      if (shouldClear) clearSelection();
+    }
   }));
 }
 function MergeClientModal({
@@ -38397,6 +38433,232 @@ function MergeClientModal({
       opacity: targetId && !busy ? 1 : .55
     }
   }, busy ? 'Merging...' : 'Merge into selected client'))));
+}
+
+// ── v2.4.0-rc2.76: Merge-selected modal ─────────────────────────
+// Opened from the Clients tab toolbar when the FC has 2+ clients
+// checked. Lets them pick the survivor from the selected set, then
+// loops mergeClientIntoClient() to absorb the others. Errors per-pair
+// are caught so one failure doesn't abandon the rest of the batch;
+// summary toast at the end reports successes + failures.
+//
+// We intentionally don't reuse MergeClientModal here because that
+// modal is built around a fixed source + a free-text "find target"
+// search. The selection flow is the opposite: targets are known,
+// the user just needs to pick which one is canonical.
+function MergeSelectedModal({
+  open,
+  selectedStates,
+  onClose
+}) {
+  const {
+    mergeClientIntoClient
+  } = useContext(AppCtx);
+  const [survivorId, setSurvivorId] = useState('');
+  const [policiesByClient, setPoliciesByClient] = useState({});
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!open || !selectedStates || !selectedStates.length) return;
+    setBusy(false);
+    dbGetAll('policies').catch(() => []).then(pols => {
+      const byClient = {};
+      (selectedStates || []).forEach(ds => {
+        byClient[ds.clientId] = (pols || []).filter(p => p.clientId === ds.clientId).length;
+      });
+      setPoliciesByClient(byClient);
+      // Default survivor: client with the most policies (canonical
+      // record almost always carries the bulk of the OCR'd data).
+      // Tiebreak alphabetically so the default is deterministic.
+      const sorted = [...(selectedStates || [])].sort((a, b) => {
+        const diff = (byClient[b.clientId] || 0) - (byClient[a.clientId] || 0);
+        return diff !== 0 ? diff : String(a.clientName || '').localeCompare(String(b.clientName || ''));
+      });
+      setSurvivorId(sorted[0]?.clientId || '');
+    }).catch(() => {
+      setPoliciesByClient({});
+      setSurvivorId(selectedStates[0]?.clientId || '');
+    });
+  }, [open, selectedStates]);
+  if (!open) return null;
+  if (!selectedStates || selectedStates.length < 2) return null;
+  const survivor = selectedStates.find(ds => ds.clientId === survivorId) || null;
+  const others = survivor ? selectedStates.filter(ds => ds.clientId !== survivor.clientId) : [];
+  const runMerge = async () => {
+    if (!survivor || !others.length || busy) return;
+    const survivorName = survivor.clientName || 'the survivor';
+    const otherNames = others.map(o => o.clientName || '(unnamed)').join(', ');
+    const confirmMsg = 'Merge ' + others.length + ' client' + (others.length === 1 ? '' : 's') + ' into ' + survivorName + '?' + '\n\nAbsorbing: ' + otherNames + '\n\nAll their policies will move to ' + survivorName + '. The source clients will disappear locally and their Drive folders will move to Trash when Drive is connected.' + '\n\nThis cannot be undone.';
+    if (!confirm(confirmMsg)) return;
+    setBusy(true);
+    let succeeded = 0;
+    let failed = 0;
+    let totalMoved = 0;
+    for (const other of others) {
+      try {
+        const result = await mergeClientIntoClient(other.clientId, survivor.clientId, {
+          sourceName: other.clientName
+        });
+        succeeded++;
+        totalMoved += result && result.moved || 0;
+      } catch (err) {
+        failed++;
+        try {
+          toast('Could not merge ' + (other.clientName || 'a client') + ': ' + (err.message || err), 'error', 5000);
+        } catch (_) {}
+      }
+    }
+    setBusy(false);
+    try {
+      if (succeeded > 0) {
+        const summary = 'Merged ' + succeeded + ' into ' + survivorName + ' (' + totalMoved + ' polic' + (totalMoved === 1 ? 'y' : 'ies') + ')' + (failed ? ' — ' + failed + ' failed' : '');
+        toast(summary, failed ? 'warning' : 'success', 5500);
+      } else if (failed > 0) {
+        toast('All ' + failed + ' merges failed — selection kept so you can retry', 'error', 5000);
+      }
+    } catch (_) {}
+    try {
+      window.dispatchEvent(new Event('policylens-clients-changed'));
+    } catch (_) {}
+    onClose(succeeded > 0);
+  };
+  const modalBg = {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 10002,
+    background: 'rgba(0,0,0,.72)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16
+  };
+  const modalBox = {
+    background: 'var(--bg2)',
+    borderRadius: 14,
+    border: '1px solid color-mix(in oklch, var(--coral) 36%, transparent)',
+    maxWidth: 520,
+    width: '100%',
+    padding: 22,
+    boxShadow: '0 20px 60px rgba(0,0,0,.5)',
+    maxHeight: '84vh',
+    overflowY: 'auto'
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    onClick: e => {
+      if (e.target === e.currentTarget && !busy) onClose(false);
+    },
+    style: modalBg
+  }, /*#__PURE__*/React.createElement("div", {
+    style: modalBox
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 16,
+      fontWeight: 800,
+      color: 'var(--coral)',
+      margin: '0 0 4px'
+    }
+  }, "Merge ", selectedStates.length, " selected clients"), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 11,
+      color: 'var(--text3)',
+      lineHeight: 1.5,
+      margin: '0 0 14px'
+    }
+  }, "Pick the one to keep. Everything else will be absorbed: policies migrate, dependants merge, source Drive folders go to Trash on next sync."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'grid',
+      gap: 8,
+      marginBottom: 16,
+      maxHeight: 300,
+      overflowY: 'auto'
+    }
+  }, selectedStates.map(ds => {
+    const isPick = ds.clientId === survivorId;
+    const pCount = policiesByClient[ds.clientId] || 0;
+    return /*#__PURE__*/React.createElement("label", {
+      key: ds.clientId,
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '10px 12px',
+        borderRadius: 8,
+        cursor: busy ? 'not-allowed' : 'pointer',
+        background: isPick ? 'rgba(91,168,160,.10)' : 'var(--bg3)',
+        border: isPick ? '1px solid color-mix(in oklch, var(--teal) 48%, transparent)' : '1px solid var(--border)',
+        opacity: busy ? 0.6 : 1
+      }
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "radio",
+      name: "merge-survivor",
+      value: ds.clientId,
+      checked: isPick,
+      disabled: busy,
+      onChange: () => setSurvivorId(ds.clientId),
+      style: {
+        accentColor: 'var(--teal)'
+      }
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: 'var(--text)',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }
+    }, ds.clientName || '(unnamed)'), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: 'var(--text3)',
+        marginTop: 2
+      }
+    }, pCount, " polic", pCount === 1 ? 'y' : 'ies', isPick ? ' — keep this one' : '')), isPick && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        fontWeight: 800,
+        color: 'var(--teal)',
+        textTransform: 'uppercase',
+        letterSpacing: '.4px'
+      }
+    }, "Survivor"));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      justifyContent: 'flex-end'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => !busy && onClose(false),
+    disabled: busy,
+    style: {
+      background: 'transparent',
+      color: 'var(--text2)',
+      border: '1px solid var(--border)',
+      borderRadius: 8,
+      padding: '8px 14px',
+      fontSize: 12,
+      fontWeight: 500,
+      cursor: busy ? 'not-allowed' : 'pointer'
+    }
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    onClick: runMerge,
+    disabled: !survivor || !others.length || busy,
+    style: {
+      background: survivor && others.length && !busy ? 'var(--coral)' : 'color-mix(in oklch, var(--coral) 30%, transparent)',
+      color: '#fff',
+      border: 'none',
+      borderRadius: 8,
+      padding: '8px 14px',
+      fontSize: 12,
+      fontWeight: 700,
+      cursor: survivor && others.length && !busy ? 'pointer' : 'not-allowed'
+    }
+  }, busy ? 'Merging…' : survivor ? 'Merge ' + others.length + ' into ' + (survivor.clientName || 'survivor') : 'Pick a survivor'))));
 }
 
 // ── v2.2.0-rc1: New Client modal ──
