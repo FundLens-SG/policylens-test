@@ -901,9 +901,9 @@ const {
 } = React;
 
 // ── APP VERSION (display only — NOT the extraction pipeline version) ──
-const APP_VERSION = 'v2.4.0-rc2.77';
+const APP_VERSION = 'v2.4.0-rc2.78';
 const APP_VERSION_DATE = '2026-05-28';
-const APP_VERSION_NAME = 'rc2.77 Merge selected — CRMLens follow-up step';
+const APP_VERSION_NAME = 'rc2.78 Merge selected — snapshot fix for mid-flow unmount';
 const AUTO_IMPORT_HIGH_CONFIDENCE_EXTRACTIONS = false;
 
 // ═══════════════════════════════════════════════════════════════
@@ -1508,6 +1508,14 @@ function getInitialPolicyLensTab() {
   return 'dashboard';
 }
 const CHANGELOG = [{
+  version: 'v2.4.0-rc2.78',
+  date: '2026-05-28',
+  name: 'rc2.78 Merge selected — snapshot fix for mid-flow unmount',
+  sections: [{
+    heading: 'rc2.77 smoke test surfaced a freeze: clicking Merge in the new modal made the modal vanish mid-flow with no followup. Root cause was a mutual-recursion in React props: mergeClientIntoClient dispatches policylens-clients-changed at the end of each pair, ClientsTab listens to that event and reloads allStates from PolicyDB, the derived selectedStates shrinks as each source gets deleted, MergeSelectedModal\'s useEffect with [open, selectedStates] re-fires and resets state to defaults mid-loop, then the `selectedStates.length < 2` render guard triggers an unmount after the first two of N sources have merged. The setPhase(\'followup\') call at the end of runMerge runs on an unmounted component and is silently ignored.',
+    items: ['FIX — MergeSelectedModal now snapshots the selection at OPEN time into a `snapshot` state and renders the entire flow (picker + followup) from that snapshot. The live `selectedStates` prop is read once (to seed the snapshot) and then ignored until onClose fires. mergeClientIntoClient can dispatch as many policylens-clients-changed events as it likes; the modal stays mounted and the followup phase appears as designed.', 'FIX — useEffect dependency narrowed from [open, selectedStates] to [open] so a prop churn during the merge can\'t reset busy/phase/mergedSummary. Snapshot is cleared on close so the next open gets a fresh capture.', 'FIX — Render guards check snapshot.length, not selectedStates.length. Header copy reads `Merge {snapshot.length} selected clients`. Radio list iterates `snapshot.map(...)`. survivor/others derived from snapshot.', 'WHY this matters: rc2.77 shipped the cross-tool handoff design (PolicyLens merge → CRMLens follow-up modal → bulk_merge deep link) but the bug above meant the followup never appeared, so the design was invisible to the FC. This RC makes the follow-up actually reachable.']
+  }]
+}, {
   version: 'v2.4.0-rc2.77',
   date: '2026-05-28',
   name: 'rc2.77 Merge selected — CRMLens follow-up step',
@@ -38475,34 +38483,60 @@ function MergeSelectedModal({
   // are gone after a successful merge.
   const [phase, setPhase] = useState('picker');
   const [mergedSummary, setMergedSummary] = useState(null);
+  // v2.4.0-rc2.78 — snapshot the selection at OPEN time and render the
+  // entire flow from it. Required because mergeClientIntoClient dispatches
+  // policylens-clients-changed at the end of each merge, which makes
+  // ClientsTab reload allStates → derive a NEW selectedStates that's
+  // missing the just-deleted source. Without the snapshot:
+  //   - useEffect resets state mid-loop (busy=false, phase='picker',
+  //     mergedSummary=null) because selectedStates changed
+  //   - render guard `selectedStates.length < 2` triggers an unmount
+  //     after the first 2 of N sources have merged
+  //   - setPhase('followup') after the loop runs on an unmounted
+  //     component, silently ignored — followup never appears
+  // FC reported this as a freeze (rc2.77 smoke test, 2026-05-28).
+  // useEffect now depends on [open] only; renders ignore the live
+  // prop and read from the snapshot until onClose fires.
+  const [snapshot, setSnapshot] = useState(null);
   useEffect(() => {
-    if (!open || !selectedStates || !selectedStates.length) return;
+    if (!open) {
+      setSnapshot(null);
+      return;
+    }
+    if (!selectedStates || selectedStates.length < 2) return;
+    const snap = selectedStates.map(ds => ({
+      clientId: ds.clientId,
+      clientName: ds.clientName || ''
+    }));
+    setSnapshot(snap);
     setBusy(false);
     setPhase('picker');
     setMergedSummary(null);
     dbGetAll('policies').catch(() => []).then(pols => {
       const byClient = {};
-      (selectedStates || []).forEach(ds => {
+      snap.forEach(ds => {
         byClient[ds.clientId] = (pols || []).filter(p => p.clientId === ds.clientId).length;
       });
       setPoliciesByClient(byClient);
       // Default survivor: client with the most policies (canonical
       // record almost always carries the bulk of the OCR'd data).
       // Tiebreak alphabetically so the default is deterministic.
-      const sorted = [...(selectedStates || [])].sort((a, b) => {
+      const sorted = [...snap].sort((a, b) => {
         const diff = (byClient[b.clientId] || 0) - (byClient[a.clientId] || 0);
         return diff !== 0 ? diff : String(a.clientName || '').localeCompare(String(b.clientName || ''));
       });
       setSurvivorId(sorted[0]?.clientId || '');
     }).catch(() => {
       setPoliciesByClient({});
-      setSurvivorId(selectedStates[0]?.clientId || '');
+      setSurvivorId(snap[0]?.clientId || '');
     });
-  }, [open, selectedStates]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
   if (!open) return null;
-  if (!selectedStates || selectedStates.length < 2) return null;
-  const survivor = selectedStates.find(ds => ds.clientId === survivorId) || null;
-  const others = survivor ? selectedStates.filter(ds => ds.clientId !== survivor.clientId) : [];
+  // rc2.78 — render from snapshot, NOT the live selectedStates prop.
+  if (!snapshot || snapshot.length < 2) return null;
+  const survivor = snapshot.find(ds => ds.clientId === survivorId) || null;
+  const others = survivor ? snapshot.filter(ds => ds.clientId !== survivor.clientId) : [];
   const runMerge = async () => {
     if (!survivor || !others.length || busy) return;
     const survivorName = survivor.clientName || 'the survivor';
@@ -38709,7 +38743,7 @@ function MergeSelectedModal({
       color: 'var(--coral)',
       margin: '0 0 4px'
     }
-  }, "Merge ", selectedStates.length, " selected clients"), /*#__PURE__*/React.createElement("p", {
+  }, "Merge ", snapshot.length, " selected clients"), /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 11,
       color: 'var(--text3)',
@@ -38724,7 +38758,7 @@ function MergeSelectedModal({
       maxHeight: 300,
       overflowY: 'auto'
     }
-  }, selectedStates.map(ds => {
+  }, snapshot.map(ds => {
     const isPick = ds.clientId === survivorId;
     const pCount = policiesByClient[ds.clientId] || 0;
     return /*#__PURE__*/React.createElement("label", {
