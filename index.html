@@ -901,9 +901,9 @@ const {
 } = React;
 
 // ── APP VERSION (display only — NOT the extraction pipeline version) ──
-const APP_VERSION = 'v2.4.0-rc2.76';
+const APP_VERSION = 'v2.4.0-rc2.77';
 const APP_VERSION_DATE = '2026-05-28';
-const APP_VERSION_NAME = 'rc2.76 Clients tab — Merge selected button';
+const APP_VERSION_NAME = 'rc2.77 Merge selected — CRMLens follow-up step';
 const AUTO_IMPORT_HIGH_CONFIDENCE_EXTRACTIONS = false;
 
 // ═══════════════════════════════════════════════════════════════
@@ -1508,6 +1508,14 @@ function getInitialPolicyLensTab() {
   return 'dashboard';
 }
 const CHANGELOG = [{
+  version: 'v2.4.0-rc2.77',
+  date: '2026-05-28',
+  name: 'rc2.77 Merge selected — CRMLens follow-up step',
+  sections: [{
+    heading: 'rc2.76 added "Merge N selected" to the Clients toolbar but the merge was PolicyLens-local only — no outbound bridge to CRMLens. That breaks the canonical-store contract: CRMLens owns client identity, and its next client-mirror push would silently re-create the deleted source clients in PolicyLens. This RC closes the loop with an explicit two-phase modal.',
+    items: ['NEW — After a successful PolicyLens merge, MergeSelectedModal transitions to a "followup" phase (teal border, ✓ header) instead of closing. Shows a coral-accented warning card: "If these clients also exist in CRMLens, merge them there too — otherwise CRMLens will re-create them on next sync." Two buttons: "Open CRMLens to merge →" (default action) and "Skip — PolicyLens only".', 'NEW — "Open CRMLens to merge" generates a base64-encoded ?bulk_merge URL param containing { target_id, target_name, source_ids, source_names } and opens ckgtools.com/tools/crmlens/ in a new tab. CRMLens has a matching handler that decodes the payload, shows its own confirm dialog with the source names, and loops its mergeProspect endpoint for each source. CRMLens clears the URL param via history.replaceState so an F5 there can\'t re-run the merge.', 'BEHAVIOUR — The followup is opt-in. The FC can legitimately skip it if these were OCR-only duplicates that never made it to CRMLens (the original use case the MergeClientModal description targets). The modal copy says so explicitly in a muted footnote so the FC understands when "skip" is the right answer.', 'CAPTURED-NOT-DERIVED — mergedSummary state captures the target/source IDs+names BEFORE the merge mutates PolicyDB. After a successful merge the source drive_states are gone, so deriving the deep-link payload from selectedStates would still work but capturing it upfront makes the data flow obvious and the followup independent of what the post-merge state of selectedStates is.', 'WHY this matters: rc2.76 shipped fast to unblock the FC who was looking at 3 duplicate Sophias in PolicyLens. But the FC immediately asked "is this synced with CRMLens?" — exactly the right question. Without rc2.77 the answer was "no, and it could disrupt your CRM." With rc2.77 the answer is "PolicyLens-side yes, and we offer you a one-click follow-up to also fix CRMLens."']
+  }]
+}, {
   version: 'v2.4.0-rc2.76',
   date: '2026-05-28',
   name: 'rc2.76 Clients tab — Merge selected button',
@@ -38457,9 +38465,21 @@ function MergeSelectedModal({
   const [survivorId, setSurvivorId] = useState('');
   const [policiesByClient, setPoliciesByClient] = useState({});
   const [busy, setBusy] = useState(false);
+  // v2.4.0-rc2.77 — two-phase modal. 'picker' lets the FC pick the
+  // survivor and runs the PolicyLens-side merge. 'followup' offers a
+  // CRMLens deep-link so the FC can also re-key CRMLens rows in one
+  // click — otherwise CRMLens's next client-mirror push to PolicyLens
+  // would silently re-create the deleted source clients. mergedSummary
+  // captures target/source IDs+names BEFORE the merge mutates state so
+  // the deep-link payload stays valid even though the source drive_states
+  // are gone after a successful merge.
+  const [phase, setPhase] = useState('picker');
+  const [mergedSummary, setMergedSummary] = useState(null);
   useEffect(() => {
     if (!open || !selectedStates || !selectedStates.length) return;
     setBusy(false);
+    setPhase('picker');
+    setMergedSummary(null);
     dbGetAll('policies').catch(() => []).then(pols => {
       const byClient = {};
       (selectedStates || []).forEach(ds => {
@@ -38519,7 +38539,49 @@ function MergeSelectedModal({
     try {
       window.dispatchEvent(new Event('policylens-clients-changed'));
     } catch (_) {}
-    onClose(succeeded > 0);
+    // rc2.77 — if any merges landed, transition to the CRMLens-followup
+    // phase instead of closing. The FC can choose to also re-key
+    // CRMLens (preserves canonical-store semantics — see docs in
+    // useState above) or skip if these were OCR-only duplicates that
+    // never made it to CRMLens.
+    if (succeeded > 0) {
+      setMergedSummary({
+        target_id: survivor.clientId,
+        target_name: survivor.clientName || '',
+        source_ids: others.map(o => o.clientId),
+        source_names: others.map(o => o.clientName || ''),
+        succeeded: succeeded,
+        failed: failed,
+        totalMoved: totalMoved
+      });
+      setPhase('followup');
+    } else {
+      onClose(false);
+    }
+  };
+  // rc2.77 — open CRMLens in a new tab with the merge payload as a
+  // base64-encoded ?bulk_merge URL param. CRMLens parses it, shows
+  // its own confirm dialog with the same source names, and loops its
+  // mergeProspect endpoint. URL is cleared via history.replaceState
+  // on the CRMLens side so an F5 there won't re-run the merge.
+  const openCrmLensMerge = () => {
+    if (!mergedSummary) return;
+    try {
+      const payload = {
+        target_id: mergedSummary.target_id,
+        target_name: mergedSummary.target_name,
+        source_ids: mergedSummary.source_ids,
+        source_names: mergedSummary.source_names
+      };
+      const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+      const url = window.location.origin + '/tools/crmlens/?bulk_merge=' + encodeURIComponent(encoded);
+      window.open(url, '_blank', 'noopener');
+      onClose(true);
+    } catch (e) {
+      try {
+        toast('Could not open CRMLens: ' + (e && e.message || e), 'error', 5000);
+      } catch (_) {}
+    }
   };
   const modalBg = {
     position: 'fixed',
@@ -38542,6 +38604,97 @@ function MergeSelectedModal({
     maxHeight: '84vh',
     overflowY: 'auto'
   };
+  // rc2.77 — followup phase: PolicyLens merge succeeded, ask whether
+  // to also re-key CRMLens. Rendered as the same modal box with a
+  // teal border (positive outcome) and a coral-accented warning card
+  // explaining the canonical-store consequence.
+  if (phase === 'followup' && mergedSummary) {
+    const tealBox = {
+      ...modalBox,
+      border: '1px solid color-mix(in oklch, var(--teal) 36%, transparent)'
+    };
+    return /*#__PURE__*/React.createElement("div", {
+      onClick: e => {
+        if (e.target === e.currentTarget) onClose(true);
+      },
+      style: modalBg
+    }, /*#__PURE__*/React.createElement("div", {
+      style: tealBox
+    }, /*#__PURE__*/React.createElement("h2", {
+      style: {
+        fontSize: 16,
+        fontWeight: 800,
+        color: 'var(--teal)',
+        margin: '0 0 6px'
+      }
+    }, "\u2713 Merged in PolicyLens"), /*#__PURE__*/React.createElement("p", {
+      style: {
+        fontSize: 11,
+        color: 'var(--text3)',
+        lineHeight: 1.5,
+        margin: '0 0 14px'
+      }
+    }, mergedSummary.target_name || 'Survivor', " absorbed ", mergedSummary.succeeded, " client", mergedSummary.succeeded === 1 ? '' : 's', mergedSummary.totalMoved ? ' (' + mergedSummary.totalMoved + ' polic' + (mergedSummary.totalMoved === 1 ? 'y' : 'ies') + ' migrated)' : '', "."), /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: '12px 14px',
+        background: 'rgba(212,142,87,.08)',
+        border: '1px solid color-mix(in oklch, var(--coral) 28%, transparent)',
+        borderRadius: 8,
+        marginBottom: 16
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        fontWeight: 800,
+        color: 'var(--coral)',
+        marginBottom: 6,
+        textTransform: 'uppercase',
+        letterSpacing: '.5px'
+      }
+    }, "\u26A0 One more step \u2014 CRMLens"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--text2)',
+        lineHeight: 1.5
+      }
+    }, "If these clients also exist in CRMLens (your CRM is the source of truth for client identity), they need to be merged there too. Otherwise CRMLens's next client-mirror sync will re-create them here.", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: 'var(--text3)',
+        fontSize: 11
+      }
+    }, "Skip this if these were OCR-only duplicates that never made it into CRMLens."))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        gap: 8,
+        justifyContent: 'flex-end',
+        flexWrap: 'wrap'
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => onClose(true),
+      style: {
+        background: 'transparent',
+        color: 'var(--text2)',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: '8px 14px',
+        fontSize: 12,
+        fontWeight: 500,
+        cursor: 'pointer'
+      }
+    }, "Skip \u2014 PolicyLens only"), /*#__PURE__*/React.createElement("button", {
+      onClick: openCrmLensMerge,
+      style: {
+        background: 'var(--teal)',
+        color: '#fff',
+        border: 'none',
+        borderRadius: 8,
+        padding: '8px 16px',
+        fontSize: 12,
+        fontWeight: 700,
+        cursor: 'pointer'
+      }
+    }, "Open CRMLens to merge \u2192"))));
+  }
   return /*#__PURE__*/React.createElement("div", {
     onClick: e => {
       if (e.target === e.currentTarget && !busy) onClose(false);
