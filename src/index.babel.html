@@ -5895,6 +5895,76 @@ function cleanPersonDisplayName(name) {
   const noHonor = raw.replace(/^(mr|mrs|ms|mdm|madam|dr|miss|master|mstr)\.?\s+/i, '').trim() || raw;
   return _titleCaseAllCapsName(noHonor);
 }
+const FAMILY_NAME_STOPWORDS = new Set(['bin', 'bte', 'bt', 'ibn', 'ibni', 'al', 'a/l', 'd/o', 's/o']);
+function _familyNameTokensFromChunk(chunk) {
+  return cleanPersonDisplayName(chunk || '')
+    .replace(/[()[\]{}]/g, ' ')
+    .replace(/[.,;:/\\|]+/g, ' ')
+    .split(/\s+/)
+    .map(token => token.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '').trim())
+    .map(token => token ? token.charAt(0).toUpperCase() + token.slice(1) : token)
+    .filter(token => token.length > 1 && !FAMILY_NAME_STOPWORDS.has(token.toLowerCase()));
+}
+function extractPolicyLensFamilyNameTokens(name) {
+  const raw = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return [];
+  const chunks = [raw.replace(/\([^)]*\)/g, ' ')];
+  const parens = raw.match(/\(([^)]+)\)/g) || [];
+  parens.forEach(part => chunks.push(part.replace(/[()]/g, ' ')));
+  const seen = new Set();
+  const out = [];
+  chunks.forEach(chunk => {
+    _familyNameTokensFromChunk(chunk).forEach(token => {
+      const key = normalizePersonNameKey(token) || token.toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(token);
+    });
+  });
+  return out;
+}
+function inferPolicyLensFamilyNameToken(name) {
+  const raw = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return '';
+  const hasParenthetical = /\([^)]*\)/.test(raw);
+  const baseTokens = _familyNameTokensFromChunk(raw.replace(/\([^)]*\)/g, ' '));
+  if (hasParenthetical && baseTokens.length >= 3) return baseTokens[1];
+  if (baseTokens.length >= 2) return baseTokens[0];
+  return baseTokens[0] || '';
+}
+function policyLensFamilyGroupFromToken(token) {
+  const cleaned = cleanPersonDisplayName(token || '').replace(/\s+/g, ' ').trim();
+  return cleaned ? cleaned + ' Family' : '';
+}
+function formatPolicyLensFamilyGroupInput(value) {
+  const cleaned = cleanPersonDisplayName(value || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return '';
+  if (/\b(family|household|portfolio|review)$/i.test(cleaned)) return cleaned;
+  return cleaned + ' Family';
+}
+function splitPolicyLensFamilyGroupLabel(value) {
+  const cleaned = cleanPersonDisplayName(value || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return null;
+  const reviewMatch = cleaned.match(/^(.*?)\s+family\s+review$/i);
+  if (reviewMatch && reviewMatch[1]) {
+    return { word: reviewMatch[1].trim(), tail: 'family', full: cleaned };
+  }
+  const match = cleaned.match(/^(.*?)\s+(family|household|portfolio)$/i);
+  if (match && match[1]) {
+    return { word: match[1].trim(), tail: match[2].toLowerCase(), full: cleaned };
+  }
+  return { word: cleaned, tail: 'portfolio', full: cleaned };
+}
+function buildPolicyLensDashboardFamilyHero(profile = {}, driveState = {}, fallbackName = '') {
+  const explicit = String(profile?.familyGroup || driveState?.familyGroup || '').trim();
+  if (explicit) {
+    return { ...splitPolicyLensFamilyGroupLabel(explicit), explicit: true, raw: explicit };
+  }
+  const token = inferPolicyLensFamilyNameToken(profile?.name || fallbackName);
+  if (token) return { word: token, tail: 'family', full: policyLensFamilyGroupFromToken(token), explicit: false, raw: '' };
+  const fallback = cleanPersonDisplayName(fallbackName || profile?.name || '').trim() || 'this client';
+  return { word: fallback, tail: 'portfolio', full: fallback, explicit: false, raw: '' };
+}
 // rc2e.47: Normalize person-name fields on a policy object IN PLACE.
 // rc2e.43 only patched the cleanPersonDisplayName helper, but several
 // display sites in BulkVerifyModal / PolicyOwnerRoutingModal / chip
@@ -32112,9 +32182,12 @@ function MergeSelectedModal({ open, selectedStates, onClose }) {
 function NewClientModal({ allStates, allPolicies, onClose, initialName, initialFamilyGroup, onCreated, onExistingSelected, stayOnCurrent, routePolicies }) {
   const { switchClient, setTab } = useContext(AppCtx);
   const [name, setName] = useState(initialName || '');
+  const [familyGroupDraft, setFamilyGroupDraft] = useState(initialFamilyGroup || '');
   const [matches, setMatches] = useState([]);
   const [profiles, setProfiles] = useState({});
   const [creating, setCreating] = useState(false);
+  const familyNameCandidates = useMemo(() => extractPolicyLensFamilyNameTokens(name).slice(0, 7), [name]);
+  useEffect(() => { setFamilyGroupDraft(initialFamilyGroup || ''); }, [initialFamilyGroup]);
   // Debounced fuzzy match
   useEffect(() => {
     const timer = setTimeout(async () => {
@@ -32147,7 +32220,7 @@ function NewClientModal({ allStates, allPolicies, onClose, initialName, initialF
     setCreating(true);
     try {
       const trimName = name.trim();
-      const familyGroup = initialFamilyGroup || '';
+      const familyGroup = formatPolicyLensFamilyGroupInput(familyGroupDraft);
       const latestStates = await PolicyDB.getAllDriveStates().catch(() => allStates || []);
       const sameName = (latestStates || []).find(ds => normalizePersonNameKey(ds?.clientName) && normalizePersonNameKey(ds.clientName) === normalizePersonNameKey(trimName));
       if (sameName) {
@@ -32214,6 +32287,25 @@ function NewClientModal({ allStates, allPolicies, onClose, initialName, initialF
         <h2 style={{fontSize:16,fontWeight:700,color:'var(--text)',margin:'0 0 12px'}}>New Client</h2>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="Client name"
           autoFocus style={{width:'100%',padding:'10px 12px',background:'var(--bg3)',border:'1px solid var(--border2)',borderRadius:8,color:'var(--text)',fontSize:14,outline:'none',boxSizing:'border-box'}} />
+        <div style={{marginTop:10}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:6}}>
+            <label style={{fontSize:10,color:'var(--text3)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.4px'}}>Family name</label>
+            {familyGroupDraft && <button type="button" onClick={() => setFamilyGroupDraft('')}
+              style={{background:'transparent',border:'none',color:'var(--text3)',fontSize:10,cursor:'pointer',padding:0}}>Clear</button>}
+          </div>
+          {familyNameCandidates.length > 0 && (
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:7}}>
+              {familyNameCandidates.map(token => (
+                <button key={token} type="button" onClick={() => setFamilyGroupDraft(policyLensFamilyGroupFromToken(token))}
+                  style={{background:familyGroupDraft === policyLensFamilyGroupFromToken(token)?'var(--gold-dim)':'var(--bg3)',color:familyGroupDraft === policyLensFamilyGroupFromToken(token)?'var(--gold)':'var(--text2)',border:'1px solid '+(familyGroupDraft === policyLensFamilyGroupFromToken(token)?'color-mix(in oklch, var(--gold) 46%, transparent)':'var(--border)'),borderRadius:999,padding:'4px 8px',fontSize:10,cursor:'pointer'}}>
+                  {token}
+                </button>
+              ))}
+            </div>
+          )}
+          <input value={familyGroupDraft} onChange={e => setFamilyGroupDraft(e.target.value)} placeholder="Optional family label"
+            style={{width:'100%',padding:'8px 10px',background:'var(--bg3)',border:'1px solid var(--border2)',borderRadius:8,color:'var(--text)',fontSize:12,outline:'none',boxSizing:'border-box'}} />
+        </div>
         {matches.length > 0 && (
           <div style={{marginTop:10}}>
             <div style={{fontSize:10,color:'var(--text3)',marginBottom:6,fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px'}}>Existing clients matching "{name.trim()}"</div>
@@ -36339,6 +36431,23 @@ function PolicyOwnerRoutingModal({ open, detected, currentClientName, allDriveSt
   const modalBox = {background:'var(--bg2)',borderRadius:16,border:'1px solid color-mix(in oklch, var(--gold) 28%, transparent)',maxWidth:760,width:'100%',padding:24,boxShadow:'0 20px 60px rgba(0,0,0,.5)',maxHeight:'88vh',overflowY:'auto'};
   const allClients = (allDriveStates || []).filter(ds => ds?.clientId && ds.clientName);
   const entries = Array.from(detected.entries());
+  const familyNameCandidates = (() => {
+    const names = [currentClientName];
+    entries.forEach(([_key, info]) => {
+      names.push(info.displayName);
+      (info.policyItems || []).forEach(item => names.push(item.policyOwner, item.lifeInsured, item.documentOwner));
+      (info.samplePolicies || []).forEach(item => names.push(item.policyOwner, item.lifeInsured, item.documentOwner));
+    });
+    const seen = new Set();
+    const out = [];
+    names.forEach(name => extractPolicyLensFamilyNameTokens(name).forEach(token => {
+      const key = normalizePersonNameKey(token) || token.toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(token);
+    }));
+    return out.slice(0, 10);
+  })();
   const itemsForInfo = (info) => (
     (info.policyItems && info.policyItems.length)
       ? info.policyItems
@@ -36463,6 +36572,20 @@ function PolicyOwnerRoutingModal({ open, detected, currentClientName, allDriveSt
             <input value={familyGroupName} onChange={e=>setFamilyGroupName(e.target.value)}
               placeholder="e.g. Tan Family Review"
               style={{width:'100%',padding:'8px 10px',background:'var(--bg2)',border:'1px solid var(--border2)',borderRadius:6,color:'var(--text)',fontSize:12,boxSizing:'border-box'}} />
+            {familyNameCandidates.length > 0 && (
+              <div style={{display:'flex',gap:5,flexWrap:'wrap',marginTop:7}}>
+                {familyNameCandidates.map(token => {
+                  const candidate = policyLensFamilyGroupFromToken(token);
+                  const picked = familyGroupName === candidate;
+                  return (
+                    <button key={token} type="button" onClick={() => setFamilyGroupName(candidate)}
+                      style={{background:picked?'var(--gold-dim)':'var(--bg3)',color:picked?'var(--gold)':'var(--text2)',border:'1px solid '+(picked?'color-mix(in oklch, var(--gold) 45%, transparent)':'var(--border)'),borderRadius:999,padding:'4px 8px',fontSize:10,cursor:'pointer'}}>
+                      {token}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div style={{padding:'10px 12px',background:'rgba(91,168,160,.06)',border:'1px solid rgba(91,168,160,.18)',borderRadius:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'var(--teal)',textTransform:'uppercase',letterSpacing:'.4px',marginBottom:8}}>Live family tree</div>
@@ -40010,6 +40133,32 @@ function Dashboard() {
     (parseFloat(p.annualIncome) > 0 || parseFloat(p.monthlyIncome) > 0)
   );
   const clientFirstLabel = (p.name && String(p.name).trim().split(/\s+/)[0]) || 'this client';
+  const [familyPickerOpen, setFamilyPickerOpen] = useState(false);
+  const [familyDraft, setFamilyDraft] = useState('');
+  const familyHero = useMemo(
+    () => buildPolicyLensDashboardFamilyHero(p, driveState, clientFirstLabel),
+    [p?.familyGroup, p?.name, driveState?.familyGroup, clientFirstLabel]
+  );
+  const familyNameCandidates = useMemo(
+    () => extractPolicyLensFamilyNameTokens(p.name || clientFirstLabel).slice(0, 8),
+    [p.name, clientFirstLabel]
+  );
+  const openDashboardFamilyPicker = () => {
+    setFamilyDraft(familyHero.raw || familyHero.full || '');
+    setFamilyPickerOpen(open => !open);
+  };
+  const saveDashboardFamilyGroup = async (rawValue) => {
+    const nextFamilyGroup = formatPolicyLensFamilyGroupInput(rawValue);
+    await saveProfile({ ...(p || {}), familyGroup: nextFamilyGroup });
+    setFamilyPickerOpen(false);
+    try { toast(nextFamilyGroup ? 'Family name saved: ' + nextFamilyGroup : 'Family name cleared', 'success', 2200); } catch(_) {}
+  };
+  const clearDashboardFamilyGroup = async () => {
+    await saveProfile({ ...(p || {}), familyGroup: '' });
+    setFamilyDraft('');
+    setFamilyPickerOpen(false);
+    try { toast('Family name will use the client name again', 'info', 2200); } catch(_) {}
+  };
 
   if(policies.length === 0) return (
     <div className="fade-in" style={{textAlign:'center',padding:'40px 16px'}}>
@@ -40390,8 +40539,51 @@ function Dashboard() {
               {greeting}, {fcFirst} ☕
             </div>
             <div style={{ fontFamily: T.serifFamily, fontSize: isNarrow ? 26 : isMobile ? 30 : 42, color: T.text, letterSpacing: '-0.025em', lineHeight: 1.1, fontWeight: 400, wordBreak: 'break-word' }}>
-              Here&apos;s how the <span style={{ color: T.primary, fontStyle: 'italic' }}>{clientLastName || clientFirst}</span> {clientLastName ? 'family' : 'portfolio'} is doing today.
+              Here&apos;s how the <button type="button" onClick={openDashboardFamilyPicker}
+                title="Set family name"
+                style={{background:'transparent',border:'none',padding:0,margin:0,color:T.primary,font:'inherit',fontStyle:'italic',cursor:'pointer',borderBottom:'1px dotted '+T.primary}}>
+                {familyHero.word}
+              </button> {familyHero.tail} is doing today.
             </div>
+            {familyPickerOpen && (
+              <div style={{marginTop:10,maxWidth:430,padding:'10px 12px',border:'1px solid '+T.border,borderRadius:10,background:T.bg2,boxShadow:T.shadow,fontFamily:T.sansFamily}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:8}}>
+                  <div style={{fontSize:10,fontWeight:800,color:T.text3,textTransform:'uppercase',letterSpacing:'.4px'}}>Family name</div>
+                  <button type="button" onClick={() => setFamilyPickerOpen(false)}
+                    style={{background:'transparent',border:'none',color:T.text3,fontSize:11,cursor:'pointer',padding:0}}>Close</button>
+                </div>
+                {familyNameCandidates.length > 0 && (
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
+                    {familyNameCandidates.map(token => {
+                      const candidate = policyLensFamilyGroupFromToken(token);
+                      const picked = formatPolicyLensFamilyGroupInput(familyDraft || familyHero.raw) === candidate;
+                      return (
+                        <button key={token} type="button" onClick={() => setFamilyDraft(candidate)}
+                          style={{background:picked?T.primarySoft:T.bg,border:'1px solid '+(picked?T.primary:T.border),borderRadius:999,padding:'4px 8px',fontSize:11,color:picked?T.primary:T.text2,cursor:'pointer'}}>
+                          {token}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <input value={familyDraft} onChange={e => setFamilyDraft(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') saveDashboardFamilyGroup(familyDraft); if (e.key === 'Escape') setFamilyPickerOpen(false); }}
+                    placeholder="Yeo or Yeo Family"
+                    style={{flex:'1 1 190px',minWidth:0,height:32,padding:'0 10px',background:T.bg,border:'1px solid '+T.border,borderRadius:8,color:T.text,fontSize:12,boxSizing:'border-box',outline:'none'}} />
+                  <button type="button" onClick={() => saveDashboardFamilyGroup(familyDraft)}
+                    style={{height:32,padding:'0 12px',border:'none',borderRadius:8,background:T.primary,color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer'}}>
+                    Save
+                  </button>
+                  {familyHero.explicit && (
+                    <button type="button" onClick={clearDashboardFamilyGroup}
+                      style={{height:32,padding:'0 10px',border:'1px solid '+T.border,borderRadius:8,background:'transparent',color:T.text3,fontSize:12,cursor:'pointer'}}>
+                      Use auto
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
             <div style={{ fontSize: 13.5, color: T.text2, marginTop: 14, lineHeight: 1.55, maxWidth: 540 }}>
               {activePols.length === 0
                 ? `No policies on file yet — drop a document above or open Policies to add the first one.`

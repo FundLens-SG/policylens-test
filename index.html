@@ -4349,6 +4349,98 @@ function cleanPersonDisplayName(name) {
   const noHonor = raw.replace(/^(mr|mrs|ms|mdm|madam|dr|miss|master|mstr)\.?\s+/i, '').trim() || raw;
   return _titleCaseAllCapsName(noHonor);
 }
+const FAMILY_NAME_STOPWORDS = new Set(['bin', 'bte', 'bt', 'ibn', 'ibni', 'al', 'a/l', 'd/o', 's/o']);
+function _familyNameTokensFromChunk(chunk) {
+  return cleanPersonDisplayName(chunk || '').replace(/[()[\]{}]/g, ' ').replace(/[.,;:/\\|]+/g, ' ').split(/\s+/).map(token => token.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '').trim()).map(token => token ? token.charAt(0).toUpperCase() + token.slice(1) : token).filter(token => token.length > 1 && !FAMILY_NAME_STOPWORDS.has(token.toLowerCase()));
+}
+function extractPolicyLensFamilyNameTokens(name) {
+  const raw = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return [];
+  const chunks = [raw.replace(/\([^)]*\)/g, ' ')];
+  const parens = raw.match(/\(([^)]+)\)/g) || [];
+  parens.forEach(part => chunks.push(part.replace(/[()]/g, ' ')));
+  const seen = new Set();
+  const out = [];
+  chunks.forEach(chunk => {
+    _familyNameTokensFromChunk(chunk).forEach(token => {
+      const key = normalizePersonNameKey(token) || token.toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(token);
+    });
+  });
+  return out;
+}
+function inferPolicyLensFamilyNameToken(name) {
+  const raw = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return '';
+  const hasParenthetical = /\([^)]*\)/.test(raw);
+  const baseTokens = _familyNameTokensFromChunk(raw.replace(/\([^)]*\)/g, ' '));
+  if (hasParenthetical && baseTokens.length >= 3) return baseTokens[1];
+  if (baseTokens.length >= 2) return baseTokens[0];
+  return baseTokens[0] || '';
+}
+function policyLensFamilyGroupFromToken(token) {
+  const cleaned = cleanPersonDisplayName(token || '').replace(/\s+/g, ' ').trim();
+  return cleaned ? cleaned + ' Family' : '';
+}
+function formatPolicyLensFamilyGroupInput(value) {
+  const cleaned = cleanPersonDisplayName(value || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return '';
+  if (/\b(family|household|portfolio|review)$/i.test(cleaned)) return cleaned;
+  return cleaned + ' Family';
+}
+function splitPolicyLensFamilyGroupLabel(value) {
+  const cleaned = cleanPersonDisplayName(value || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return null;
+  const reviewMatch = cleaned.match(/^(.*?)\s+family\s+review$/i);
+  if (reviewMatch && reviewMatch[1]) {
+    return {
+      word: reviewMatch[1].trim(),
+      tail: 'family',
+      full: cleaned
+    };
+  }
+  const match = cleaned.match(/^(.*?)\s+(family|household|portfolio)$/i);
+  if (match && match[1]) {
+    return {
+      word: match[1].trim(),
+      tail: match[2].toLowerCase(),
+      full: cleaned
+    };
+  }
+  return {
+    word: cleaned,
+    tail: 'portfolio',
+    full: cleaned
+  };
+}
+function buildPolicyLensDashboardFamilyHero(profile = {}, driveState = {}, fallbackName = '') {
+  const explicit = String(profile?.familyGroup || driveState?.familyGroup || '').trim();
+  if (explicit) {
+    return {
+      ...splitPolicyLensFamilyGroupLabel(explicit),
+      explicit: true,
+      raw: explicit
+    };
+  }
+  const token = inferPolicyLensFamilyNameToken(profile?.name || fallbackName);
+  if (token) return {
+    word: token,
+    tail: 'family',
+    full: policyLensFamilyGroupFromToken(token),
+    explicit: false,
+    raw: ''
+  };
+  const fallback = cleanPersonDisplayName(fallbackName || profile?.name || '').trim() || 'this client';
+  return {
+    word: fallback,
+    tail: 'portfolio',
+    full: fallback,
+    explicit: false,
+    raw: ''
+  };
+}
 // rc2e.47: Normalize person-name fields on a policy object IN PLACE.
 // rc2e.43 only patched the cleanPersonDisplayName helper, but several
 // display sites in BulkVerifyModal / PolicyOwnerRoutingModal / chip
@@ -38942,9 +39034,14 @@ function NewClientModal({
     setTab
   } = useContext(AppCtx);
   const [name, setName] = useState(initialName || '');
+  const [familyGroupDraft, setFamilyGroupDraft] = useState(initialFamilyGroup || '');
   const [matches, setMatches] = useState([]);
   const [profiles, setProfiles] = useState({});
   const [creating, setCreating] = useState(false);
+  const familyNameCandidates = useMemo(() => extractPolicyLensFamilyNameTokens(name).slice(0, 7), [name]);
+  useEffect(() => {
+    setFamilyGroupDraft(initialFamilyGroup || '');
+  }, [initialFamilyGroup]);
   // Debounced fuzzy match
   useEffect(() => {
     const timer = setTimeout(async () => {
@@ -38985,7 +39082,7 @@ function NewClientModal({
     setCreating(true);
     try {
       const trimName = name.trim();
-      const familyGroup = initialFamilyGroup || '';
+      const familyGroup = formatPolicyLensFamilyGroupInput(familyGroupDraft);
       const latestStates = await PolicyDB.getAllDriveStates().catch(() => allStates || []);
       const sameName = (latestStates || []).find(ds => normalizePersonNameKey(ds?.clientName) && normalizePersonNameKey(ds.clientName) === normalizePersonNameKey(trimName));
       if (sameName) {
@@ -39145,7 +39242,73 @@ function NewClientModal({
       outline: 'none',
       boxSizing: 'border-box'
     }
-  }), matches.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 8,
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 10,
+      color: 'var(--text3)',
+      fontWeight: 700,
+      textTransform: 'uppercase',
+      letterSpacing: '.4px'
+    }
+  }, "Family name"), familyGroupDraft && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setFamilyGroupDraft(''),
+    style: {
+      background: 'transparent',
+      border: 'none',
+      color: 'var(--text3)',
+      fontSize: 10,
+      cursor: 'pointer',
+      padding: 0
+    }
+  }, "Clear")), familyNameCandidates.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap',
+      marginBottom: 7
+    }
+  }, familyNameCandidates.map(token => /*#__PURE__*/React.createElement("button", {
+    key: token,
+    type: "button",
+    onClick: () => setFamilyGroupDraft(policyLensFamilyGroupFromToken(token)),
+    style: {
+      background: familyGroupDraft === policyLensFamilyGroupFromToken(token) ? 'var(--gold-dim)' : 'var(--bg3)',
+      color: familyGroupDraft === policyLensFamilyGroupFromToken(token) ? 'var(--gold)' : 'var(--text2)',
+      border: '1px solid ' + (familyGroupDraft === policyLensFamilyGroupFromToken(token) ? 'color-mix(in oklch, var(--gold) 46%, transparent)' : 'var(--border)'),
+      borderRadius: 999,
+      padding: '4px 8px',
+      fontSize: 10,
+      cursor: 'pointer'
+    }
+  }, token))), /*#__PURE__*/React.createElement("input", {
+    value: familyGroupDraft,
+    onChange: e => setFamilyGroupDraft(e.target.value),
+    placeholder: "Optional family label",
+    style: {
+      width: '100%',
+      padding: '8px 10px',
+      background: 'var(--bg3)',
+      border: '1px solid var(--border2)',
+      borderRadius: 8,
+      color: 'var(--text)',
+      fontSize: 12,
+      outline: 'none',
+      boxSizing: 'border-box'
+    }
+  })), matches.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 10
     }
@@ -44941,6 +45104,23 @@ function PolicyOwnerRoutingModal({
   };
   const allClients = (allDriveStates || []).filter(ds => ds?.clientId && ds.clientName);
   const entries = Array.from(detected.entries());
+  const familyNameCandidates = (() => {
+    const names = [currentClientName];
+    entries.forEach(([_key, info]) => {
+      names.push(info.displayName);
+      (info.policyItems || []).forEach(item => names.push(item.policyOwner, item.lifeInsured, item.documentOwner));
+      (info.samplePolicies || []).forEach(item => names.push(item.policyOwner, item.lifeInsured, item.documentOwner));
+    });
+    const seen = new Set();
+    const out = [];
+    names.forEach(name => extractPolicyLensFamilyNameTokens(name).forEach(token => {
+      const key = normalizePersonNameKey(token) || token.toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(token);
+    }));
+    return out.slice(0, 10);
+  })();
   const itemsForInfo = info => info.policyItems && info.policyItems.length ? info.policyItems : (info.policyIndices || []).map((idx, i) => ({
     policyIndex: idx,
     sourceField: info.sourceField,
@@ -45087,7 +45267,31 @@ function PolicyOwnerRoutingModal({
       fontSize: 12,
       boxSizing: 'border-box'
     }
-  })), /*#__PURE__*/React.createElement("div", {
+  }), familyNameCandidates.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 5,
+      flexWrap: 'wrap',
+      marginTop: 7
+    }
+  }, familyNameCandidates.map(token => {
+    const candidate = policyLensFamilyGroupFromToken(token);
+    const picked = familyGroupName === candidate;
+    return /*#__PURE__*/React.createElement("button", {
+      key: token,
+      type: "button",
+      onClick: () => setFamilyGroupName(candidate),
+      style: {
+        background: picked ? 'var(--gold-dim)' : 'var(--bg3)',
+        color: picked ? 'var(--gold)' : 'var(--text2)',
+        border: '1px solid ' + (picked ? 'color-mix(in oklch, var(--gold) 45%, transparent)' : 'var(--border)'),
+        borderRadius: 999,
+        padding: '4px 8px',
+        fontSize: 10,
+        cursor: 'pointer'
+      }
+    }, token);
+  }))), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '10px 12px',
       background: 'rgba(91,168,160,.06)',
@@ -52601,6 +52805,36 @@ function Dashboard() {
   }, [policies, retirementLite, advisorReview, gaps, coverage, reqDeath, reqTPD, reqCI, reqDI, lifecycleEvents, premiumBreakdown.totalAnnual, premRatio, totalCoverage]);
   const hasProfileBasics = !!(p.name && String(p.name).trim() && profileHasAgeSource(p) && (parseFloat(p.annualIncome) > 0 || parseFloat(p.monthlyIncome) > 0));
   const clientFirstLabel = p.name && String(p.name).trim().split(/\s+/)[0] || 'this client';
+  const [familyPickerOpen, setFamilyPickerOpen] = useState(false);
+  const [familyDraft, setFamilyDraft] = useState('');
+  const familyHero = useMemo(() => buildPolicyLensDashboardFamilyHero(p, driveState, clientFirstLabel), [p?.familyGroup, p?.name, driveState?.familyGroup, clientFirstLabel]);
+  const familyNameCandidates = useMemo(() => extractPolicyLensFamilyNameTokens(p.name || clientFirstLabel).slice(0, 8), [p.name, clientFirstLabel]);
+  const openDashboardFamilyPicker = () => {
+    setFamilyDraft(familyHero.raw || familyHero.full || '');
+    setFamilyPickerOpen(open => !open);
+  };
+  const saveDashboardFamilyGroup = async rawValue => {
+    const nextFamilyGroup = formatPolicyLensFamilyGroupInput(rawValue);
+    await saveProfile({
+      ...(p || {}),
+      familyGroup: nextFamilyGroup
+    });
+    setFamilyPickerOpen(false);
+    try {
+      toast(nextFamilyGroup ? 'Family name saved: ' + nextFamilyGroup : 'Family name cleared', 'success', 2200);
+    } catch (_) {}
+  };
+  const clearDashboardFamilyGroup = async () => {
+    await saveProfile({
+      ...(p || {}),
+      familyGroup: ''
+    });
+    setFamilyDraft('');
+    setFamilyPickerOpen(false);
+    try {
+      toast('Family name will use the client name again', 'info', 2200);
+    } catch (_) {}
+  };
   if (policies.length === 0) return /*#__PURE__*/React.createElement("div", {
     className: "fade-in",
     style: {
@@ -53424,12 +53658,139 @@ function Dashboard() {
       fontWeight: 400,
       wordBreak: 'break-word'
     }
-  }, "Here's how the ", /*#__PURE__*/React.createElement("span", {
+  }, "Here's how the ", /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: openDashboardFamilyPicker,
+    title: "Set family name",
     style: {
+      background: 'transparent',
+      border: 'none',
+      padding: 0,
+      margin: 0,
       color: T.primary,
-      fontStyle: 'italic'
+      font: 'inherit',
+      fontStyle: 'italic',
+      cursor: 'pointer',
+      borderBottom: '1px dotted ' + T.primary
     }
-  }, clientLastName || clientFirst), " ", clientLastName ? 'family' : 'portfolio', " is doing today."), /*#__PURE__*/React.createElement("div", {
+  }, familyHero.word), " ", familyHero.tail, " is doing today."), familyPickerOpen && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      maxWidth: 430,
+      padding: '10px 12px',
+      border: '1px solid ' + T.border,
+      borderRadius: 10,
+      background: T.bg2,
+      boxShadow: T.shadow,
+      fontFamily: T.sansFamily
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 8,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 800,
+      color: T.text3,
+      textTransform: 'uppercase',
+      letterSpacing: '.4px'
+    }
+  }, "Family name"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setFamilyPickerOpen(false),
+    style: {
+      background: 'transparent',
+      border: 'none',
+      color: T.text3,
+      fontSize: 11,
+      cursor: 'pointer',
+      padding: 0
+    }
+  }, "Close")), familyNameCandidates.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap',
+      marginBottom: 8
+    }
+  }, familyNameCandidates.map(token => {
+    const candidate = policyLensFamilyGroupFromToken(token);
+    const picked = formatPolicyLensFamilyGroupInput(familyDraft || familyHero.raw) === candidate;
+    return /*#__PURE__*/React.createElement("button", {
+      key: token,
+      type: "button",
+      onClick: () => setFamilyDraft(candidate),
+      style: {
+        background: picked ? T.primarySoft : T.bg,
+        border: '1px solid ' + (picked ? T.primary : T.border),
+        borderRadius: 999,
+        padding: '4px 8px',
+        fontSize: 11,
+        color: picked ? T.primary : T.text2,
+        cursor: 'pointer'
+      }
+    }, token);
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      alignItems: 'center',
+      flexWrap: 'wrap'
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: familyDraft,
+    onChange: e => setFamilyDraft(e.target.value),
+    onKeyDown: e => {
+      if (e.key === 'Enter') saveDashboardFamilyGroup(familyDraft);
+      if (e.key === 'Escape') setFamilyPickerOpen(false);
+    },
+    placeholder: "Yeo or Yeo Family",
+    style: {
+      flex: '1 1 190px',
+      minWidth: 0,
+      height: 32,
+      padding: '0 10px',
+      background: T.bg,
+      border: '1px solid ' + T.border,
+      borderRadius: 8,
+      color: T.text,
+      fontSize: 12,
+      boxSizing: 'border-box',
+      outline: 'none'
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => saveDashboardFamilyGroup(familyDraft),
+    style: {
+      height: 32,
+      padding: '0 12px',
+      border: 'none',
+      borderRadius: 8,
+      background: T.primary,
+      color: '#fff',
+      fontSize: 12,
+      fontWeight: 700,
+      cursor: 'pointer'
+    }
+  }, "Save"), familyHero.explicit && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: clearDashboardFamilyGroup,
+    style: {
+      height: 32,
+      padding: '0 10px',
+      border: '1px solid ' + T.border,
+      borderRadius: 8,
+      background: 'transparent',
+      color: T.text3,
+      fontSize: 12,
+      cursor: 'pointer'
+    }
+  }, "Use auto"))), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13.5,
       color: T.text2,
