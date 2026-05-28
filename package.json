@@ -22,7 +22,8 @@
     "split:preview": "node tools/extract-index-modules.mjs --list",
     "eval:extraction": "node tools/eval-extraction.mjs",
     "eval:extraction:verbose": "node tools/eval-extraction.mjs --verbose",
-    "smoke:xlsx": "node tools/smoke-xlsx.mjs"
+    "smoke:xlsx": "node tools/smoke-xlsx.mjs",
+    "smoke:browser": "node tools/smoke-browser.mjs"
   },
   "devDependencies": {
     "xlsx": "^0.18.5"

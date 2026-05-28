@@ -54,12 +54,31 @@ function discoverWorkbooks() {
 }
 
 // ── Invariant checks ──
+function normalizeHeader(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function hasSourcePremiumValue(policy) {
+  const raw = policy && policy._rawSpreadsheetRow && typeof policy._rawSpreadsheetRow === 'object'
+    ? policy._rawSpreadsheetRow
+    : {};
+  for (const [key, value] of Object.entries(raw)) {
+    const header = normalizeHeader(key);
+    if (!/\bpremium\b/.test(header)) continue;
+    if (/\b(paid|term|mode|frequency|end|start|min|minimum|face)\b/.test(header)) continue;
+    const text = String(value == null ? '' : value).trim();
+    if (!text || /^[-\u2013\u2014]+$/.test(text)) return false;
+    return /\d/.test(text);
+  }
+  return false;
+}
+
 function checkWorkbook(filePath) {
   const result = {
     file: path.basename(filePath),
     ok: true,
     failures: [],
-    stats: { sheets: 0, sections: 0, policies: 0, withInsurer: 0, withProduct: 0, withPremium: 0, unnamedRiders: 0, totalRiders: 0 }
+    stats: { sheets: 0, sections: 0, policies: 0, withInsurer: 0, withProduct: 0, withPremium: 0, premiumExpected: 0, withExpectedPremium: 0, unnamedRiders: 0, totalRiders: 0 }
   };
 
   let extraction;
@@ -80,6 +99,10 @@ function checkWorkbook(filePath) {
       if (p.productName || p.policyName) result.stats.withProduct++;
       const prem = parseFloat(p.premiumAmount);
       if (Number.isFinite(prem) && prem > 0) result.stats.withPremium++;
+      if (hasSourcePremiumValue(p)) {
+        result.stats.premiumExpected++;
+        if (Number.isFinite(prem) && prem > 0) result.stats.withExpectedPremium++;
+      }
       for (const rd of (p._ridersOut || [])) {
         result.stats.totalRiders++;
         if (rd === '(unnamed)') result.stats.unnamedRiders++;
@@ -110,6 +133,13 @@ function checkWorkbook(filePath) {
     if (premPct < 50) {
       result.ok = false;
       result.failures.push('only ' + premPct + '% of ' + s.policies + ' policies have premium amount (threshold 50%)');
+    }
+    if (s.premiumExpected > 0) {
+      const expectedPremPct = Math.round(s.withExpectedPremium / s.premiumExpected * 100);
+      if (expectedPremPct < 95) {
+        result.ok = false;
+        result.failures.push('only ' + expectedPremPct + '% of ' + s.premiumExpected + ' source premium cells were parsed (threshold 95%)');
+      }
     }
   }
   if (s.totalRiders > 0) {
@@ -154,6 +184,7 @@ for (const wb of workbooks) {
     ' insurer=' + pct(s.withInsurer) + '%' +
     ' product=' + pct(s.withProduct) + '%' +
     ' premium=' + pct(s.withPremium) + '%' +
+    (s.premiumExpected > 0 ? ' sourcePremium=' + Math.round(s.withExpectedPremium / s.premiumExpected * 100) + '% (' + s.withExpectedPremium + '/' + s.premiumExpected + ')' : '') +
     ' riders=' + s.totalRiders + ' (unnamed=' + s.unnamedRiders + ')'));
   for (const f of r.failures) console.log(red('         ✗ ' + f));
 }

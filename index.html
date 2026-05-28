@@ -611,6 +611,19 @@ function normalizePolicyLensEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
 
+function isPolicyLensLocalHost() {
+  try {
+    return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+  } catch (_) { return false; }
+}
+
+function isPolicyLensLocalSmokeMode() {
+  try {
+    if (!isPolicyLensLocalHost()) return false;
+    return new URLSearchParams(window.location.search || '').get('pl_smoke') === '1';
+  } catch (_) { return false; }
+}
+
 function showPolicyLensAuthBlock(message) {
   try {
     var el = document.getElementById('auth-loading');
@@ -618,6 +631,36 @@ function showPolicyLensAuthBlock(message) {
     el.style.display = 'flex';
     el.textContent = message;
   } catch (_) {}
+}
+
+function redirectPolicyLensToHub(reason) {
+  resolvePolicyLensAuthReady(false);
+  if (isPolicyLensLocalHost()) {
+    var suffix = reason ? ' (' + reason + ')' : '';
+    showPolicyLensAuthBlock('PolicyLens needs a CKGTools hub session' + suffix + '. Open https://ckgtools.com/ or run local smoke with ?pl_smoke=1.');
+    return;
+  }
+  window.location.replace('https://ckgtools.com/');
+}
+
+function grantPolicyLensLocalSmokeSession() {
+  if (!isPolicyLensLocalSmokeMode()) return false;
+  var smokeUser = {
+    id: '00000000-0000-4000-8000-000000000001',
+    email: 'policylens-smoke@local.test',
+    user_metadata: { full_name: 'PolicyLens Smoke' }
+  };
+  _user = smokeUser;
+  _prof = { email: smokeUser.email, full_name: 'PolicyLens Smoke', approved: true, role: 'admin' };
+  _isAdmin = true;
+  window._user = _user;
+  window._prof = _prof;
+  window._isAdmin = true;
+  window.__policylensLocalSmokeMode = true;
+  window._driveProviderToken = null;
+  console.log('[Auth] Local smoke session granted');
+  authGrant();
+  return true;
 }
 
 // rc2.37: The browser profile has one IndexedDB/localStorage namespace, but
@@ -726,24 +769,35 @@ function sb(){return _SB;}
 async function authLogout(){
   try { await sb().auth.signOut(); } catch(_){}
   _user=null;_prof=null;_isAdmin=false;
+  window._user = null;
+  window._prof = null;
   // rc2e.60: keep window._isAdmin in sync so a re-mount before redirect
   // doesn't see a stale truthy value.
   window._isAdmin = false;
-  window.location.href = '/';
+  window.location.href = 'https://ckgtools.com/';
 }
 
 async function authCheck(){
   try {
+    if (window.__policylensBootFatal) {
+      resolvePolicyLensAuthReady(false);
+      showPolicyLensAuthBlock(window.__policylensBootFatal);
+      return;
+    }
+    if (grantPolicyLensLocalSmokeSession()) return;
     var s = sb();
-    if(!s){ document.getElementById('auth-loading').style.display='none'; return; }
+    if(!s){
+      redirectPolicyLensToHub('auth library unavailable');
+      return;
+    }
     var sess = await s.auth.getSession();
     if(!sess.data || !sess.data.session){
       // No hub session — bounce to ckgtools root for sign-in
-      resolvePolicyLensAuthReady(false);
-      window.location.href = '/';
+      redirectPolicyLensToHub('no hub session');
       return;
     }
     _user = sess.data.session.user;
+    window._user = _user;
     console.log('[Auth] User:', _user.email, 'UID:', _user.id);
 
     // rc2e.60: Read role + status from hub public.profiles. RLS allows
@@ -770,6 +824,7 @@ async function authCheck(){
 
     _prof = { email:_user.email, full_name:_user.user_metadata?.full_name||'', approved: status === 'active', role: role };
     _isAdmin = (role === 'admin' || role === 'owner');
+    window._prof = _prof;
     // Mirror to window for React consumers that read window._isAdmin
     // directly (App's isAdmin useState seeds from it; the
     // policylens-auth-changed event below re-syncs).
@@ -782,8 +837,7 @@ async function authCheck(){
     authGrant();
   } catch(err) {
     console.error('[Auth] Error:', err);
-    resolvePolicyLensAuthReady(false);
-    window.location.href = '/';
+    redirectPolicyLensToHub('auth error');
   }
 }
 
@@ -875,17 +929,31 @@ document.addEventListener('DOMContentLoaded',function(){
     var el=document.getElementById('auth-loading');
     if(el && el.style.display!=='none'){
       console.warn('[Auth] Hydration timeout after 8s — bouncing to hub');
-      window.location.href = '/';
+      redirectPolicyLensToHub('hydration timeout');
     }
   }, 8000);
   authCheck();
   var s=sb();if(s)s.auth.onAuthStateChange(function(ev){
-    if(ev==='SIGNED_OUT'){ window.location.href='/'; }
+    if(ev==='SIGNED_OUT'){ redirectPolicyLensToHub('signed out'); }
   });
 });
 </script>
 
 <div id="root"></div>
+<script>
+(function verifyPolicyLensCriticalLibraries() {
+  try {
+    var missing = [];
+    if (!window.React) missing.push('React');
+    if (!window.ReactDOM) missing.push('ReactDOM');
+    if (!window.XLSX) missing.push('XLSX');
+    if (!missing.length) return;
+    window.__policylensBootFatal = 'PolicyLens could not load required libraries: ' + missing.join(', ') + '. Check connection, ad blockers, or CDN access, then reload.';
+    if (typeof showPolicyLensAuthBlock === 'function') showPolicyLensAuthBlock(window.__policylensBootFatal);
+    if (typeof resolvePolicyLensAuthReady === 'function') resolvePolicyLensAuthReady(false);
+  } catch (_) {}
+})();
+</script>
 <!-- Generated from src/index.babel.html by npm run build:precompile.
      Keep this file self-contained for GitHub Pages; edit the source HTML, then rebuild. -->
 <script data-precompiled="babel-standalone-7.23.9">
@@ -12669,6 +12737,11 @@ function inferXlsxPolicySubType(policy) {
   const productRule = inferXlsxProductRule(policy.productName || policy.policyName || '');
   if (productRule?.subType) return productRule.subType;
   const t = [policy.productName, policy.subType, policy.category].filter(Boolean).join(' ').toLowerCase();
+  // Employer/group hospital & surgical covers are health policies, but they
+  // are not Singapore Integrated Shield Plans. Keep them out of ISP gap logic.
+  if (/\bgroup\b.*\b(?:hospital|hospitalisation|hospitalization|h\s*&\s*s|surgical)\b|\b(?:hospital|hospitalisation|hospitalization)\s*(?:&|and)\s*surgical\b/.test(t) && !/\b(?:medishield|incomeshield|income\s+shield|healthshield|prushield|supremehealth|singlife\s+shield|hsbc\s+life\s+shield|raffles\s+shield)\b/.test(t)) {
+    return 'Hospital Income';
+  }
   if (/\bterm\b/.test(t)) return 'Term Life';
   if (/short[\s-]*term\s*endow/.test(t)) return 'Short-term Endowment';
   if (/lifetime\s*endow/.test(t)) return 'Lifetime Endowment';
@@ -29674,6 +29747,10 @@ function App() {
     (async () => {
       await (window.__policylensAuthReadyPromise || Promise.resolve(true));
       if (!window._user) return;
+      if (window.__policylensLocalSmokeMode) {
+        console.log('[Drive] Boot: local smoke mode, skipping');
+        return;
+      }
       if (driveLSGet(DRIVE_LS.localOnlyMode) === '1') {
         console.log('[Drive] Boot: local-only mode, skipping');
         return;
