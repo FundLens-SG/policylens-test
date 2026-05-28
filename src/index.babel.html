@@ -30720,6 +30720,7 @@ function ClientsTab() {
   const [dragState, setDragState] = useState(null);
   const [dragOverFamily, setDragOverFamily] = useState('');
   const [dragOverTier, setDragOverTier] = useState('');
+  const [dragOverOwnFamily, setDragOverOwnFamily] = useState(false);
   // v2.4.0-rc2.76: selection-driven merge — opens a small modal when
   // the FC has 2+ clients checked in the list and clicks "Merge selected".
   // Picks one as the survivor, then loops mergeClientIntoClient() for
@@ -31122,8 +31123,14 @@ function ClientsTab() {
     setDragState(null);
     setDragOverFamily('');
     setDragOverTier('');
+    setDragOverOwnFamily(false);
   };
   const findClientStateById = (clientId) => visibleStates.find(ds => ds.clientId === clientId) || allStates.find(ds => ds.clientId === clientId) || null;
+  const ownFamilyGroupForClient = (ds) => {
+    const display = resolveClientName(ds);
+    const token = inferPolicyLensFamilyNameToken(display) || cleanPersonDisplayName(display);
+    return policyLensFamilyGroupFromToken(token) || formatPolicyLensFamilyGroupInput(display) || inferFamilyGroupName(display);
+  };
   const saveTierForClient = async (ds, newTier, opts = {}) => {
     if (!ds?.clientId || !newTier) return;
     const oldTier = ds.tier || UNASSIGNED_TIER;
@@ -31189,6 +31196,30 @@ function ClientsTab() {
       try { toast('Household move failed: ' + (err.message || err), 'error', 4000); } catch(_) {}
     }
   };
+  const handleOwnFamilyDragOver = (e) => {
+    if (dragState?.type !== 'client') return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'move'; } catch(_) {}
+    if (!dragOverOwnFamily) setDragOverOwnFamily(true);
+  };
+  const handleOwnFamilyDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const payload = readPolicyLensDragPayload(e);
+    endPolicyLensDrag();
+    if (payload?.type !== 'client') return;
+    const ds = findClientStateById(payload.clientId);
+    if (!ds) return;
+    const nextFamily = ownFamilyGroupForClient(ds);
+    if (!nextFamily) return;
+    try {
+      await saveFamilyGroupForClient(ds, nextFamily, { silent: true });
+      try { window.dispatchEvent(new Event('policylens-clients-changed')); } catch(_) {}
+      try { toast((resolveClientName(ds) || 'Client') + ' moved into ' + nextFamily, 'success', 2500); } catch(_) {}
+    } catch (err) {
+      try { toast('Own household move failed: ' + (err.message || err), 'error', 4000); } catch(_) {}
+    }
+  };
   const renderClientCard = (ds, compactFamily=false, memberIndex=0, memberCount=1) => {
     const isActive = ds.clientId === activeClientId;
     const { clientPols, totalPrem } = clientStatsFor(ds);
@@ -31200,14 +31231,57 @@ function ClientsTab() {
     const inferredFamily = inferFamilyGroupName(getProfileForClient(ds).name || ds.clientName);
     if (compactFamily) {
       const premiumLabel = totalPrem > 0 ? '$' + Math.round(totalPrem).toLocaleString() + '/yr' : 'No premiums';
-      const policyLabel = clientPols.length + ' ' + (clientPols.length === 1 ? 'policy' : 'policies');
       const reviewLabel = ds.lastReviewedAt ? 'reviewed ' + fmtRelativeTime(ds.lastReviewedAt) : 'not reviewed';
+      const displayName = resolveClientName(ds);
+      const initial = (displayName || '?').trim().slice(0, 1).toUpperCase() || '?';
       return (
         <div key={ds.clientId} onClick={() => openClientView(ds.clientId, 'profile')}
           draggable={!isMobile}
           onDragStart={e => beginClientDrag(e, ds)}
           onDragEnd={endPolicyLensDrag}
-          style={{display:'grid',gridTemplateColumns:'18px 22px minmax(0,1fr) auto',gap:10,alignItems:'stretch',padding:isMobile?'10px 8px':'10px 10px',cursor:'pointer',background:isActive?'color-mix(in oklch, var(--gold) 8%, transparent)':'transparent',borderBottom:memberIndex < memberCount - 1?'1px solid var(--border)':'none',transition:'background .15s'}}>
+          style={{display:'flex',flexDirection:'column',gap:10,minHeight:126,padding:12,cursor:'grab',background:isActive?'color-mix(in oklch, var(--gold) 8%, transparent)':'var(--bg)',border:isActive?'1px solid color-mix(in oklch, var(--gold) 48%, transparent)':'1px solid var(--border)',borderRadius:10,boxShadow:isActive?'0 8px 22px rgba(60,40,20,.08)':'none',transition:'border-color .15s, transform .15s'}}>
+          <div style={{display:'flex',alignItems:'flex-start',gap:9,minWidth:0}}>
+            <input type="checkbox" checked={selectedSet.has(ds.clientId)}
+              title={'Select ' + (ds.clientName || 'client')}
+              onClick={e => e.stopPropagation()}
+              onChange={e => { e.stopPropagation(); toggleClientSelection(ds.clientId); }}
+              style={{...selectionCheckboxStyle,marginTop:4,flexShrink:0}} />
+            <div style={{width:28,height:28,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:12,fontWeight:800,color:isActive?'#fff':'var(--gold)',background:isActive?'var(--gold)':'var(--gold-dim)',border:'1px solid color-mix(in oklch, var(--gold) 32%, transparent)'}}>
+              {initial}
+            </div>
+            <div style={{minWidth:0,flex:1}}>
+              <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap'}}>
+                <span style={{fontSize:13,fontWeight:800,color:'var(--text)',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'100%'}}>{displayName}</span>
+                {isActive && <span style={{fontSize:9,fontWeight:800,color:'var(--gold)',background:'var(--gold-dim)',border:'1px solid color-mix(in oklch, var(--gold) 31%, transparent)',borderRadius:999,padding:'2px 6px'}}>Viewing</span>}
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap',marginTop:5}}>
+                <span style={{fontSize:9,color:'var(--text3)',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:999,padding:'2px 6px'}}>{tierLabel}</span>
+                {syncLabel && <span style={{fontSize:9,color:syncColor,background:syncState.bg,border:'1px solid rgba(255,255,255,.05)',borderRadius:999,padding:'2px 6px'}}>{syncLabel}</span>}
+              </div>
+            </div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+            <div style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:8,padding:'8px 9px',minWidth:0}}>
+              <div style={{fontSize:9,fontWeight:800,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.25px'}}>Policies</div>
+              <div style={{fontSize:15,fontWeight:800,color:'var(--text)',marginTop:3}}>{clientPols.length}</div>
+            </div>
+            <div style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:8,padding:'8px 9px',minWidth:0}}>
+              <div style={{fontSize:9,fontWeight:800,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.25px'}}>Premium</div>
+              <div style={{fontSize:13,fontWeight:800,color:totalPrem > 0?'var(--gold)':'var(--text3)',marginTop:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{premiumLabel}</div>
+            </div>
+          </div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginTop:'auto'}}>
+            <span style={{fontSize:10,color:'var(--text3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{reviewLabel}</span>
+            <span style={{fontSize:10,color:isActive?'var(--gold)':'var(--text3)',fontWeight:700,whiteSpace:'nowrap'}}>Open profile &rsaquo;</span>
+          </div>
+        </div>
+      );
+      false && (
+        <div key={ds.clientId} onClick={() => openClientView(ds.clientId, 'profile')}
+          draggable={!isMobile}
+          onDragStart={e => beginClientDrag(e, ds)}
+          onDragEnd={endPolicyLensDrag}
+          style={{display:'flex',flexDirection:'column',gap:10,minHeight:126,padding:12,cursor:'grab',background:isActive?'color-mix(in oklch, var(--gold) 8%, transparent)':'var(--bg)',border:isActive?'1px solid color-mix(in oklch, var(--gold) 48%, transparent)':'1px solid var(--border)',borderRadius:10,boxShadow:isActive?'0 8px 22px rgba(60,40,20,.08)':'none',transition:'border-color .15s, transform .15s'}}>
           <input type="checkbox" checked={selectedSet.has(ds.clientId)}
             title={'Select ' + (ds.clientName || 'client')}
             onClick={e => e.stopPropagation()}
@@ -31520,7 +31594,7 @@ function ClientsTab() {
             <div style={{fontSize:10,color:'var(--text3)',border:'1px dashed var(--border)',borderRadius:8,padding:'8px'}}>No owner/life assured/dependant links detected yet.</div>
           )}
         </div>
-        <div style={{display:'grid'}}>
+        <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(auto-fit,minmax(220px,1fr))',gap:10,padding:12,background:'var(--bg2)'}}>
           {group.clients.map((ds, idx) => renderClientCard(ds, true, idx, group.clients.length))}
         </div>
       </div>
@@ -31748,6 +31822,18 @@ function ClientsTab() {
               </div>
             </div>
           </div>
+          {dragState?.type === 'client' && (
+            <div onDragOver={handleOwnFamilyDragOver}
+              onDragLeave={() => setDragOverOwnFamily(false)}
+              onDrop={handleOwnFamilyDrop}
+              style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap',padding:'12px 14px',border:dragOverOwnFamily?'1px dashed var(--teal)':'1px dashed var(--border)',borderRadius:10,background:dragOverOwnFamily?'rgba(91,168,160,.10)':'var(--bg2)',boxShadow:dragOverOwnFamily?'0 0 0 3px rgba(91,168,160,.10)':'none'}}>
+              <div style={{minWidth:0}}>
+                <div style={{fontSize:12,fontWeight:800,color:dragOverOwnFamily?'var(--teal)':'var(--text)'}}>Create own household</div>
+                <div style={{fontSize:10,color:'var(--text3)',marginTop:2}}>Drop here to move the dragged member back into their own family.</div>
+              </div>
+              <span style={{fontSize:10,fontWeight:800,color:'var(--teal)',background:'rgba(91,168,160,.08)',border:'1px solid rgba(91,168,160,.22)',borderRadius:999,padding:'5px 9px',whiteSpace:'nowrap'}}>Drop member here</span>
+            </div>
+          )}
           {familyGroups.map(group => renderFamilyGroup(group))}
           {false && familyGroups.map(group => (
             <div key={group.name} style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:12,padding:12}}>

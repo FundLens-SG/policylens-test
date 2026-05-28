@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readFile, rmSync, statSync } from 'node:fs';
+import { createServer as createTcpServer } from 'node:net';
+import { existsSync, mkdirSync, readFile, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -77,7 +78,7 @@ function safeRmProfile(profileDir) {
 function runBrowser(browserPath, url, mode) {
   const profileDir = path.join(tmpdir(), 'policylens-smoke-' + mode + '-' + Date.now());
   mkdirSync(profileDir, { recursive: true });
-  const screenshotPath = path.join(tmpdir(), 'policylens-browser-smoke.png');
+  const screenshotPath = path.join(tmpdir(), 'policylens-browser-smoke-' + mode + '-' + Date.now() + '.png');
   const args = [
     '--headless=new',
     '--disable-gpu',
@@ -87,7 +88,9 @@ function runBrowser(browserPath, url, mode) {
     '--disable-features=Translate,MediaRouter',
     '--user-data-dir=' + profileDir,
     '--window-size=1440,900',
-    '--virtual-time-budget=15000',
+    '--virtual-time-budget=30000',
+    '--timeout=15000',
+    '--run-all-compositor-stages-before-draw',
   ];
   if (mode === 'dom') args.push('--dump-dom');
   if (mode === 'screenshot') args.push('--screenshot=' + screenshotPath);
@@ -116,6 +119,125 @@ function runBrowser(browserPath, url, mode) {
   });
 }
 
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function pickFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = createTcpServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+async function fetchJsonWhenReady(url, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return await res.json();
+      lastError = new Error('HTTP ' + res.status);
+    } catch (err) {
+      lastError = err;
+    }
+    await delay(150);
+  }
+  throw lastError || new Error('Timed out waiting for ' + url);
+}
+
+async function connectCdp(wsUrl) {
+  const ws = new WebSocket(wsUrl);
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true });
+    ws.addEventListener('error', () => reject(new Error('CDP websocket failed')), { once: true });
+  });
+  let nextId = 1;
+  const pending = new Map();
+  ws.addEventListener('message', event => {
+    const raw = typeof event.data === 'string' ? event.data : Buffer.from(event.data).toString('utf8');
+    const msg = JSON.parse(raw);
+    if (!msg.id || !pending.has(msg.id)) return;
+    const { resolve, reject } = pending.get(msg.id);
+    pending.delete(msg.id);
+    if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+    else resolve(msg.result || {});
+  });
+  return {
+    send(method, params = {}) {
+      const id = nextId++;
+      const payload = JSON.stringify({ id, method, params });
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        ws.send(payload);
+      });
+    },
+    close() {
+      try { ws.close(); } catch (_) {}
+    },
+  };
+}
+
+async function runBrowserCdpScreenshot(browserPath, url) {
+  const profileDir = path.join(tmpdir(), 'policylens-smoke-cdp-' + Date.now());
+  mkdirSync(profileDir, { recursive: true });
+  const screenshotPath = path.join(tmpdir(), 'policylens-browser-smoke-cdp-' + Date.now() + '.png');
+  const debugPort = await pickFreePort();
+  const args = [
+    '--headless=new',
+    '--disable-gpu',
+    '--no-first-run',
+    '--disable-default-apps',
+    '--disable-background-networking',
+    '--disable-features=Translate,MediaRouter',
+    '--user-data-dir=' + profileDir,
+    '--window-size=1440,900',
+    '--remote-debugging-port=' + debugPort,
+    url,
+  ];
+
+  const child = spawn(browserPath, args, { windowsHide: true });
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  let cdp = null;
+  try {
+    const pages = await fetchJsonWhenReady(`http://127.0.0.1:${debugPort}/json/list`, 15000);
+    const page = pages.find(p => p.type === 'page' && p.webSocketDebuggerUrl) || pages.find(p => p.webSocketDebuggerUrl);
+    if (!page) throw new Error('No debuggable page found');
+    cdp = await connectCdp(page.webSocketDebuggerUrl);
+    await cdp.send('Page.enable');
+    await cdp.send('Runtime.enable');
+
+    const deadline = Date.now() + 30000;
+    let rootText = '';
+    while (Date.now() < deadline) {
+      const evaluated = await cdp.send('Runtime.evaluate', {
+        expression: `(() => { const root = document.getElementById('root'); return root ? root.innerText : ''; })()`,
+        returnByValue: true,
+      });
+      rootText = String(evaluated.result?.value || '');
+      if (/\b(Dashboard|Policies|Clients|Profile|Settings)\b/.test(rootText) && !/Loading PolicyLens/.test(rootText)) break;
+      await delay(200);
+    }
+    if (!/\b(Dashboard|Policies|Clients|Profile|Settings)\b/.test(rootText) || /Loading PolicyLens/.test(rootText)) {
+      throw new Error('PolicyLens did not become screenshot-ready. text=' + rootText.slice(0, 120));
+    }
+
+    await cdp.send('Page.bringToFront');
+    const shot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false });
+    writeFileSync(screenshotPath, Buffer.from(shot.data, 'base64'));
+    return { code: 0, stdout: '', stderr, screenshotPath, rootContent: rootText };
+  } finally {
+    if (cdp) cdp.close();
+    try { child.kill(); } catch (_) {}
+    safeRmProfile(profileDir);
+  }
+}
+
 function rootContentFromDump(dom) {
   const rootStart = dom.indexOf('<div id="root">');
   const scriptStart = dom.indexOf('<script data-precompiled', rootStart);
@@ -129,18 +251,14 @@ const server = await startServer();
 try {
   const port = server.address().port;
   const smokeUrl = `http://127.0.0.1:${port}/?pl_smoke=1`;
-  const domResult = await runBrowser(browserPath, smokeUrl, 'dom');
-  if (domResult.code !== 0) {
-    throw new Error('Browser DOM smoke exited ' + domResult.code + ': ' + domResult.stderr.slice(0, 600));
-  }
-  const rootContent = rootContentFromDump(domResult.stdout);
+  const shotResult = await runBrowserCdpScreenshot(browserPath, smokeUrl);
+  const rootContent = shotResult.rootContent || '';
   const shellReady = /\b(Dashboard|Policies|Clients|Profile|Settings)\b/.test(rootContent);
   const stuckOnLoader = /Loading PolicyLens/.test(rootContent) && !shellReady;
   if (!shellReady || stuckOnLoader) {
     throw new Error('PolicyLens did not render the app shell. rootLength=' + rootContent.length);
   }
 
-  const shotResult = await runBrowser(browserPath, smokeUrl, 'screenshot');
   if (shotResult.code !== 0) {
     throw new Error('Browser screenshot smoke exited ' + shotResult.code + ': ' + shotResult.stderr.slice(0, 600));
   }
