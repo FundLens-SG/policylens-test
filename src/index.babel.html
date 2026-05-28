@@ -30721,6 +30721,7 @@ function ClientsTab() {
   const [dragOverFamily, setDragOverFamily] = useState('');
   const [dragOverTier, setDragOverTier] = useState('');
   const [dragOverOwnFamily, setDragOverOwnFamily] = useState(false);
+  const dragPayloadRef = useRef(null);
   // v2.4.0-rc2.76: selection-driven merge — opens a small modal when
   // the FC has 2+ clients checked in the list and clicks "Merge selected".
   // Picks one as the survivor, then loops mergeClientIntoClient() for
@@ -31093,6 +31094,7 @@ function ClientsTab() {
   const beginClientDrag = (e, ds) => {
     if (isMobile || !ds?.clientId) return;
     const payload = { type:'client', clientId: ds.clientId, name: resolveClientName(ds) };
+    dragPayloadRef.current = payload;
     try {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('application/x-policylens-client', JSON.stringify(payload));
@@ -31103,6 +31105,7 @@ function ClientsTab() {
   const beginFamilyDrag = (e, group) => {
     if (isMobile || !group?.name) return;
     const payload = { type:'family', familyName: group.name, clientIds: (group.clients || []).map(ds => ds.clientId).filter(Boolean) };
+    dragPayloadRef.current = payload;
     try {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('application/x-policylens-family', JSON.stringify(payload));
@@ -31117,9 +31120,10 @@ function ClientsTab() {
       const client = e.dataTransfer.getData('application/x-policylens-client');
       if (client) return JSON.parse(client);
     } catch(_) {}
-    return dragState;
+    return dragPayloadRef.current || dragState;
   };
   const endPolicyLensDrag = () => {
+    dragPayloadRef.current = null;
     setDragState(null);
     setDragOverFamily('');
     setDragOverTier('');
@@ -31160,7 +31164,7 @@ function ClientsTab() {
     try { await saveTierForClient(ds, tier); } catch(err) { try { toast('Tier move failed: ' + (err.message || err), 'error', 3500); } catch(_) {} }
   };
   const handleFamilyDragOver = (e, group) => {
-    const payload = dragState;
+    const payload = dragPayloadRef.current || dragState;
     if (!payload || !group?.name) return;
     if (payload.type === 'family' && payload.familyName === group.name) return;
     if (payload.type !== 'client' && payload.type !== 'family') return;
@@ -31197,7 +31201,8 @@ function ClientsTab() {
     }
   };
   const handleOwnFamilyDragOver = (e) => {
-    if (dragState?.type !== 'client') return;
+    const payload = dragPayloadRef.current || dragState;
+    if (payload?.type !== 'client') return;
     e.preventDefault();
     try { e.dataTransfer.dropEffect = 'move'; } catch(_) {}
     if (!dragOverOwnFamily) setDragOverOwnFamily(true);
@@ -31220,6 +31225,16 @@ function ClientsTab() {
       try { toast('Own household move failed: ' + (err.message || err), 'error', 4000); } catch(_) {}
     }
   };
+  const handleCompactFamilyMove = async (ds, targetName) => {
+    if (!ds || !targetName) return;
+    try {
+      await saveFamilyGroupForClient(ds, targetName, { silent: true });
+      try { window.dispatchEvent(new Event('policylens-clients-changed')); } catch(_) {}
+      try { toast((resolveClientName(ds) || 'Client') + ' moved into ' + targetName, 'success', 2200); } catch(_) {}
+    } catch (err) {
+      try { toast('Family move failed: ' + (err.message || err), 'error', 4000); } catch(_) {}
+    }
+  };
   const renderClientCard = (ds, compactFamily=false, memberIndex=0, memberCount=1) => {
     const isActive = ds.clientId === activeClientId;
     const { clientPols, totalPrem } = clientStatsFor(ds);
@@ -31239,86 +31254,47 @@ function ClientsTab() {
           draggable={!isMobile}
           onDragStart={e => beginClientDrag(e, ds)}
           onDragEnd={endPolicyLensDrag}
-          style={{display:'flex',flexDirection:'column',gap:10,minHeight:126,padding:12,cursor:'grab',background:isActive?'color-mix(in oklch, var(--gold) 8%, transparent)':'var(--bg)',border:isActive?'1px solid color-mix(in oklch, var(--gold) 48%, transparent)':'1px solid var(--border)',borderRadius:10,boxShadow:isActive?'0 8px 22px rgba(60,40,20,.08)':'none',transition:'border-color .15s, transform .15s'}}>
-          <div style={{display:'flex',alignItems:'flex-start',gap:9,minWidth:0}}>
+          style={{display:'flex',flexDirection:'column',gap:7,width:isMobile?'100%':260,maxWidth:'100%',padding:'9px 10px',cursor:'grab',background:isActive?'color-mix(in oklch, var(--gold) 7%, transparent)':'var(--bg)',border:isActive?'1px solid color-mix(in oklch, var(--gold) 48%, transparent)':'1px solid var(--border)',borderRadius:8,boxShadow:isActive?'0 5px 14px rgba(60,40,20,.06)':'none',transition:'border-color .15s, transform .15s'}}>
+          <div style={{display:'flex',alignItems:'flex-start',gap:7,minWidth:0}}>
             <input type="checkbox" checked={selectedSet.has(ds.clientId)}
               title={'Select ' + (ds.clientName || 'client')}
               onClick={e => e.stopPropagation()}
               onChange={e => { e.stopPropagation(); toggleClientSelection(ds.clientId); }}
-              style={{...selectionCheckboxStyle,marginTop:4,flexShrink:0}} />
-            <div style={{width:28,height:28,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:12,fontWeight:800,color:isActive?'#fff':'var(--gold)',background:isActive?'var(--gold)':'var(--gold-dim)',border:'1px solid color-mix(in oklch, var(--gold) 32%, transparent)'}}>
+              style={{...selectionCheckboxStyle,marginTop:2,flexShrink:0}} />
+            <div style={{width:22,height:22,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:10,fontWeight:800,color:isActive?'#fff':'var(--gold)',background:isActive?'var(--gold)':'var(--gold-dim)',border:'1px solid color-mix(in oklch, var(--gold) 32%, transparent)'}}>
               {initial}
             </div>
             <div style={{minWidth:0,flex:1}}>
               <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap'}}>
-                <span style={{fontSize:13,fontWeight:800,color:'var(--text)',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'100%'}}>{displayName}</span>
+                <span style={{fontSize:12,fontWeight:800,color:'var(--text)',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'100%'}}>{displayName}</span>
                 {isActive && <span style={{fontSize:9,fontWeight:800,color:'var(--gold)',background:'var(--gold-dim)',border:'1px solid color-mix(in oklch, var(--gold) 31%, transparent)',borderRadius:999,padding:'2px 6px'}}>Viewing</span>}
               </div>
-              <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap',marginTop:5}}>
+              <div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'wrap',marginTop:4}}>
                 <span style={{fontSize:9,color:'var(--text3)',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:999,padding:'2px 6px'}}>{tierLabel}</span>
                 {syncLabel && <span style={{fontSize:9,color:syncColor,background:syncState.bg,border:'1px solid rgba(255,255,255,.05)',borderRadius:999,padding:'2px 6px'}}>{syncLabel}</span>}
               </div>
             </div>
           </div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
-            <div style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:8,padding:'8px 9px',minWidth:0}}>
-              <div style={{fontSize:9,fontWeight:800,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.25px'}}>Policies</div>
-              <div style={{fontSize:15,fontWeight:800,color:'var(--text)',marginTop:3}}>{clientPols.length}</div>
-            </div>
-            <div style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:8,padding:'8px 9px',minWidth:0}}>
-              <div style={{fontSize:9,fontWeight:800,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.25px'}}>Premium</div>
-              <div style={{fontSize:13,fontWeight:800,color:totalPrem > 0?'var(--gold)':'var(--text3)',marginTop:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{premiumLabel}</div>
-            </div>
+          <div style={{fontSize:10,color:'var(--text3)',lineHeight:1.35,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+            <strong style={{color:'var(--text)',fontWeight:800}}>{clientPols.length}</strong> {clientPols.length===1?'policy':'policies'} - <strong style={{color:totalPrem > 0?'var(--gold)':'var(--text3)',fontWeight:800}}>{premiumLabel}</strong> - {reviewLabel}
           </div>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginTop:'auto'}}>
-            <span style={{fontSize:10,color:'var(--text3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{reviewLabel}</span>
-            <span style={{fontSize:10,color:isActive?'var(--gold)':'var(--text3)',fontWeight:700,whiteSpace:'nowrap'}}>Open profile &rsaquo;</span>
-          </div>
-        </div>
-      );
-      false && (
-        <div key={ds.clientId} onClick={() => openClientView(ds.clientId, 'profile')}
-          draggable={!isMobile}
-          onDragStart={e => beginClientDrag(e, ds)}
-          onDragEnd={endPolicyLensDrag}
-          style={{display:'flex',flexDirection:'column',gap:10,minHeight:126,padding:12,cursor:'grab',background:isActive?'color-mix(in oklch, var(--gold) 8%, transparent)':'var(--bg)',border:isActive?'1px solid color-mix(in oklch, var(--gold) 48%, transparent)':'1px solid var(--border)',borderRadius:10,boxShadow:isActive?'0 8px 22px rgba(60,40,20,.08)':'none',transition:'border-color .15s, transform .15s'}}>
-          <input type="checkbox" checked={selectedSet.has(ds.clientId)}
-            title={'Select ' + (ds.clientName || 'client')}
-            onClick={e => e.stopPropagation()}
-            onChange={e => { e.stopPropagation(); toggleClientSelection(ds.clientId); }}
-            style={{...selectionCheckboxStyle,alignSelf:'center'}} />
-          <div style={{position:'relative',width:22}}>
-            <div style={{position:'absolute',left:10,top:memberIndex===0?'50%':0,bottom:memberIndex===memberCount-1?'50%':0,width:1,background:'color-mix(in oklch, var(--gold) 35%, transparent)'}} />
-            <div style={{position:'absolute',left:5,top:'50%',transform:'translateY(-50%)',width:11,height:11,borderRadius:'50%',background:isActive?'var(--gold)':'var(--bg)',border:isActive?'2px solid var(--gold)':'2px solid color-mix(in oklch, var(--gold) 63%, transparent)',boxShadow:isActive?'0 0 0 3px var(--gold-dim)':'none'}} />
-          </div>
-          <div style={{minWidth:0,alignSelf:'center'}}>
-            <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap'}}>
-              <span style={{fontSize:13,fontWeight:800,color:'var(--text)',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:isMobile?'100%':340}}>{resolveClientName(ds)}</span>
-              {isActive && <span style={{fontSize:9,fontWeight:800,color:'var(--gold)',background:'var(--gold-dim)',border:'1px solid color-mix(in oklch, var(--gold) 31%, transparent)',borderRadius:999,padding:'2px 6px'}}>Viewing</span>}
-              <span style={{fontSize:9,color:'var(--text3)',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:999,padding:'2px 6px'}}>{tierLabel}</span>
-              {syncLabel && <span style={{fontSize:9,color:syncColor,background:syncState.bg,border:'1px solid rgba(255,255,255,.05)',borderRadius:999,padding:'2px 6px'}}>{syncLabel}</span>}
-            </div>
-            <div style={{fontSize:10,color:'var(--text3)',marginTop:3}}>
-              {premiumLabel} · {policyLabel} · {reviewLabel}
-            </div>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:7}}>
-              {clientPols.length === 0 && <span style={{fontSize:10,color:'var(--text3)',border:'1px dashed rgba(255,255,255,.12)',borderRadius:999,padding:'3px 7px'}}>No policies</span>}
-              {clientPols.slice(0, 3).map(pol => {
-                const amount = compactMoney(annualizedPremium(pol)) || compactMoney(getPolicyAnnualPayout(pol)) || compactMoney(pol.sumAssured);
-                return (
-                  <span key={pol.id || pol.policyNumber || policyMiniTitle(pol)} title={(pol.insurer || 'Insurer unclear') + ' · Owner: ' + policyOwnerDisplay(pol)}
-                    style={{display:'inline-flex',alignItems:'center',gap:5,maxWidth:isMobile?'100%':260,minWidth:0,fontSize:10,color:'var(--text2)',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:999,padding:'4px 8px'}}>
-                    <span style={{minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{policyMiniTitle(pol)}</span>
-                    {amount && <strong style={{color:'var(--gold)',fontWeight:800,whiteSpace:'nowrap'}}>{amount}</strong>}
-                  </span>
-                );
-              })}
-              {clientPols.length > 3 && <span style={{fontSize:10,color:'var(--text3)',border:'1px solid var(--border)',borderRadius:999,padding:'4px 8px'}}>+{clientPols.length - 3} more</span>}
-            </div>
-          </div>
-          <div style={{display:'flex',alignItems:'center',gap:8,alignSelf:'center'}}>
-            {!isMobile && <span style={{fontSize:10,color:'var(--text3)',whiteSpace:'nowrap'}}>Open profile</span>}
-            <span style={{fontSize:18,color:isActive?'var(--gold)':'var(--text3)',lineHeight:1}}>›</span>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:6}}>
+            <select value=""
+              title="Move household member"
+              onMouseDown={e => e.stopPropagation()}
+              onClick={e => e.stopPropagation()}
+              onChange={e => {
+                e.stopPropagation();
+                const target = e.target.value;
+                e.target.value = '';
+                if (target) handleCompactFamilyMove(ds, target);
+              }}
+              style={{height:24,minWidth:82,maxWidth:120,fontSize:10,borderRadius:6,background:'var(--bg2)',border:'1px solid var(--border)',color:'var(--text2)',padding:'2px 6px',cursor:'pointer'}}>
+              <option value="">Move...</option>
+              <option value={ownFamilyGroupForClient(ds)}>Own household</option>
+              {familyNameOptions.filter(name => name && name !== familyGroupFor(ds)).map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <span style={{fontSize:10,color:isActive?'var(--gold)':'var(--text3)',fontWeight:700,whiteSpace:'nowrap'}}>Open &rsaquo;</span>
           </div>
         </div>
       );
@@ -31429,7 +31405,7 @@ function ClientsTab() {
   const renderFamilyGroup = (group) => {
     const groupDraftKey = 'group:' + group.name;
     const groupNameValue = familyDrafts[groupDraftKey] ?? group.name;
-    const questions = groupPolicyQuestions(group);
+    const questions = [];
     const relationRows = householdRelationsForGroup(group);
     const isFamilyDropTarget = dragOverFamily === group.name;
     return (
@@ -31594,7 +31570,7 @@ function ClientsTab() {
             <div style={{fontSize:10,color:'var(--text3)',border:'1px dashed var(--border)',borderRadius:8,padding:'8px'}}>No owner/life assured/dependant links detected yet.</div>
           )}
         </div>
-        <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(auto-fit,minmax(220px,1fr))',gap:10,padding:12,background:'var(--bg2)'}}>
+        <div style={{display:'flex',flexWrap:'wrap',gap:8,padding:'10px 12px',background:'var(--bg2)',alignItems:'stretch'}}>
           {group.clients.map((ds, idx) => renderClientCard(ds, true, idx, group.clients.length))}
         </div>
       </div>

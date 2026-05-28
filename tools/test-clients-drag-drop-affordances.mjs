@@ -12,6 +12,8 @@ for (const marker of [
   'handleFamilyDrop',
   'handleTierDrop',
   'handleOwnFamilyDrop',
+  'handleCompactFamilyMove',
+  'dragPayloadRef',
   'application/x-policylens-client',
   'application/x-policylens-family',
   'Drag household',
@@ -19,7 +21,7 @@ for (const marker of [
   'Drop to move here',
   'Create own household',
   'Drop member here',
-  "repeat(auto-fit,minmax(220px,1fr))"
+  'Move...'
 ]) {
   assert.ok(source.includes(marker), `expected Clients drag/drop marker: ${marker}`);
 }
