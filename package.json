@@ -11,6 +11,7 @@
     "test:review-inbox": "node tools/test-review-inbox.mjs",
     "test:client-context": "node tools/test-client-context-header.mjs",
     "test:family-name": "node tools/test-family-name-customisation.mjs",
+    "test:clients-dnd": "node tools/test-clients-drag-drop-affordances.mjs",
     "test:soh-je": "node tools/test-soh-je-xlsx-extraction.mjs",
     "test:soh-family": "node tools/test-soh-family-xlsx-extraction.mjs",
     "test:extraction-reconciliation": "node tools/test-extraction-reconciliation.mjs",

@@ -36157,6 +36157,9 @@ function ClientsTab() {
   // v2.4.0-rc1.52: family-view merge modal — source client + open flag
   const [familyMergeOpen, setFamilyMergeOpen] = useState(false);
   const [familyMergeSource, setFamilyMergeSource] = useState(null);
+  const [dragState, setDragState] = useState(null);
+  const [dragOverFamily, setDragOverFamily] = useState('');
+  const [dragOverTier, setDragOverTier] = useState('');
   // v2.4.0-rc2.76: selection-driven merge — opens a small modal when
   // the FC has 2+ clients checked in the list and clicks "Merge selected".
   // Picks one as the survivor, then loops mergeClientIntoClient() for
@@ -36653,6 +36656,145 @@ function ClientsTab() {
     cursor: 'pointer',
     flexShrink: 0
   };
+  const beginClientDrag = (e, ds) => {
+    if (isMobile || !ds?.clientId) return;
+    const payload = {
+      type: 'client',
+      clientId: ds.clientId,
+      name: resolveClientName(ds)
+    };
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('application/x-policylens-client', JSON.stringify(payload));
+      e.dataTransfer.setData('text/plain', payload.name || 'PolicyLens client');
+    } catch (_) {}
+    setDragState(payload);
+  };
+  const beginFamilyDrag = (e, group) => {
+    if (isMobile || !group?.name) return;
+    const payload = {
+      type: 'family',
+      familyName: group.name,
+      clientIds: (group.clients || []).map(ds => ds.clientId).filter(Boolean)
+    };
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('application/x-policylens-family', JSON.stringify(payload));
+      e.dataTransfer.setData('text/plain', group.name || 'PolicyLens family');
+    } catch (_) {}
+    setDragState(payload);
+  };
+  const readPolicyLensDragPayload = e => {
+    try {
+      const family = e.dataTransfer.getData('application/x-policylens-family');
+      if (family) return JSON.parse(family);
+      const client = e.dataTransfer.getData('application/x-policylens-client');
+      if (client) return JSON.parse(client);
+    } catch (_) {}
+    return dragState;
+  };
+  const endPolicyLensDrag = () => {
+    setDragState(null);
+    setDragOverFamily('');
+    setDragOverTier('');
+  };
+  const findClientStateById = clientId => visibleStates.find(ds => ds.clientId === clientId) || allStates.find(ds => ds.clientId === clientId) || null;
+  const saveTierForClient = async (ds, newTier, opts = {}) => {
+    if (!ds?.clientId || !newTier) return;
+    const oldTier = ds.tier || UNASSIGNED_TIER;
+    if (oldTier === newTier) return;
+    await handleTierChange(ds.clientId, newTier, oldTier, (cid, nt) => {
+      setAllStates(prev => prev.map(s => s.clientId === cid ? {
+        ...s,
+        tier: nt
+      } : s));
+      if (cid === activeClientId && driveState) setDriveState({
+        ...driveState,
+        tier: nt
+      });
+    });
+    try {
+      window.dispatchEvent(new CustomEvent('policylens-trigger-drive-write', {
+        detail: {
+          clientId: ds.clientId,
+          reason: 'tier-drag-drop'
+        }
+      }));
+    } catch (_) {}
+    if (!opts.silent) try {
+      toast((resolveClientName(ds) || 'Client') + ' moved to ' + newTier, 'success', 2200);
+    } catch (_) {}
+  };
+  const handleTierDragOver = (e, tier) => {
+    if (dragState?.type !== 'client' || !tier || tier === 'all') return;
+    e.preventDefault();
+    try {
+      e.dataTransfer.dropEffect = 'move';
+    } catch (_) {}
+    if (dragOverTier !== tier) setDragOverTier(tier);
+  };
+  const handleTierDrop = async (e, tier) => {
+    if (!tier || tier === 'all') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const payload = readPolicyLensDragPayload(e);
+    endPolicyLensDrag();
+    if (payload?.type !== 'client') return;
+    const ds = findClientStateById(payload.clientId);
+    if (!ds) return;
+    try {
+      await saveTierForClient(ds, tier);
+    } catch (err) {
+      try {
+        toast('Tier move failed: ' + (err.message || err), 'error', 3500);
+      } catch (_) {}
+    }
+  };
+  const handleFamilyDragOver = (e, group) => {
+    const payload = dragState;
+    if (!payload || !group?.name) return;
+    if (payload.type === 'family' && payload.familyName === group.name) return;
+    if (payload.type !== 'client' && payload.type !== 'family') return;
+    e.preventDefault();
+    try {
+      e.dataTransfer.dropEffect = 'move';
+    } catch (_) {}
+    if (dragOverFamily !== group.name) setDragOverFamily(group.name);
+  };
+  const handleFamilyDrop = async (e, targetGroup) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const payload = readPolicyLensDragPayload(e);
+    endPolicyLensDrag();
+    if (!payload || !targetGroup?.name) return;
+    const targetName = targetGroup.name;
+    const ids = payload.type === 'family' ? (payload.clientIds || []).filter(id => id && payload.familyName !== targetName) : payload.type === 'client' ? [payload.clientId] : [];
+    const uniqueIds = [...new Set(ids)].filter(Boolean);
+    if (!uniqueIds.length) return;
+    try {
+      let moved = 0;
+      for (const clientId of uniqueIds) {
+        const ds = findClientStateById(clientId);
+        if (!ds || familyGroupFor(ds) === targetName) continue;
+        await saveFamilyGroupForClient(ds, targetName, {
+          silent: true
+        });
+        moved++;
+      }
+      if (moved > 0) {
+        try {
+          window.dispatchEvent(new Event('policylens-clients-changed'));
+        } catch (_) {}
+        try {
+          toast((payload.type === 'family' ? 'Household merged into ' : 'Client moved into ') + targetName, 'success', 2500);
+        } catch (_) {}
+      }
+    } catch (err) {
+      try {
+        toast('Household move failed: ' + (err.message || err), 'error', 4000);
+      } catch (_) {}
+    }
+  };
   const renderClientCard = (ds, compactFamily = false, memberIndex = 0, memberCount = 1) => {
     const isActive = ds.clientId === activeClientId;
     const {
@@ -36672,6 +36814,9 @@ function ClientsTab() {
       return /*#__PURE__*/React.createElement("div", {
         key: ds.clientId,
         onClick: () => openClientView(ds.clientId, 'profile'),
+        draggable: !isMobile,
+        onDragStart: e => beginClientDrag(e, ds),
+        onDragEnd: endPolicyLensDrag,
         style: {
           display: 'grid',
           gridTemplateColumns: '18px 22px minmax(0,1fr) auto',
@@ -36859,6 +37004,9 @@ function ClientsTab() {
     return /*#__PURE__*/React.createElement("div", {
       key: ds.clientId,
       onClick: () => openClientView(ds.clientId, 'profile'),
+      draggable: !isMobile,
+      onDragStart: e => beginClientDrag(e, ds),
+      onDragEnd: endPolicyLensDrag,
       style: {
         background: isActive ? 'color-mix(in oklch, var(--gold) 9%, transparent)' : 'var(--bg2)',
         border: isActive ? '1px solid color-mix(in oklch, var(--gold) 56%, transparent)' : '1px solid var(--border)',
@@ -36908,25 +37056,9 @@ function ClientsTab() {
       size: "sm",
       onTierChange: async newTier => {
         try {
-          await handleTierChange(ds.clientId, newTier, tierLabel, (cid, nt) => {
-            setAllStates(prev => prev.map(s => s.clientId === cid ? {
-              ...s,
-              tier: nt
-            } : s));
-            if (cid === activeClientId && driveState) {
-              setDriveState({
-                ...driveState,
-                tier: nt
-              });
-            }
+          await saveTierForClient(ds, newTier, {
+            silent: true
           });
-        } catch (_) {}
-        try {
-          window.dispatchEvent(new CustomEvent('policylens-trigger-drive-write', {
-            detail: {
-              clientId: ds.clientId
-            }
-          }));
         } catch (_) {}
       }
     }), /*#__PURE__*/React.createElement("button", {
@@ -37111,13 +37243,20 @@ function ClientsTab() {
     const groupNameValue = familyDrafts[groupDraftKey] ?? group.name;
     const questions = groupPolicyQuestions(group);
     const relationRows = householdRelationsForGroup(group);
+    const isFamilyDropTarget = dragOverFamily === group.name;
     return /*#__PURE__*/React.createElement("div", {
       key: group.name,
+      onDragOver: e => handleFamilyDragOver(e, group),
+      onDragLeave: e => {
+        if (e.currentTarget === e.target) setDragOverFamily('');
+      },
+      onDrop: e => handleFamilyDrop(e, group),
       style: {
         background: 'var(--bg2)',
-        border: '1px solid var(--border)',
+        border: isFamilyDropTarget ? '1px dashed var(--teal)' : '1px solid var(--border)',
         borderRadius: 10,
-        overflow: 'hidden'
+        overflow: 'hidden',
+        boxShadow: isFamilyDropTarget ? '0 0 0 3px rgba(91,168,160,.10)' : 'none'
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -37207,9 +37346,28 @@ function ClientsTab() {
       style: {
         display: 'flex',
         gap: 6,
-        flexShrink: 0
+        flexShrink: 0,
+        flexWrap: 'wrap',
+        justifyContent: isMobile ? 'flex-start' : 'flex-end'
       }
-    }, group.clients.length >= 2 && /*#__PURE__*/React.createElement("button", {
+    }, !isMobile && /*#__PURE__*/React.createElement("div", {
+      draggable: true,
+      onDragStart: e => beginFamilyDrag(e, group),
+      onDragEnd: endPolicyLensDrag,
+      title: "Drag this household into another household",
+      style: {
+        padding: '6px 10px',
+        fontSize: 10,
+        fontWeight: 700,
+        borderRadius: 7,
+        background: 'rgba(91,168,160,.08)',
+        color: 'var(--teal)',
+        border: '1px solid rgba(91,168,160,.22)',
+        cursor: 'grab',
+        flexShrink: 0,
+        whiteSpace: 'nowrap'
+      }
+    }, "Drag household"), group.clients.length >= 2 && /*#__PURE__*/React.createElement("button", {
       onClick: () => {
         const src = group.clients[0];
         if (!src) return;
@@ -37289,6 +37447,77 @@ function ClientsTab() {
       }
     }, "+", questions.length - 3)), /*#__PURE__*/React.createElement("div", {
       style: {
+        padding: '10px 14px',
+        borderBottom: '1px solid rgba(255,255,255,.055)',
+        background: isFamilyDropTarget ? 'rgba(91,168,160,.10)' : 'rgba(0,0,0,.06)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        flexWrap: 'wrap',
+        marginBottom: 8
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10,
+        fontWeight: 800,
+        color: 'var(--teal)',
+        textTransform: 'uppercase',
+        letterSpacing: '.35px'
+      }
+    }, "Household"), !isMobile && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        color: isFamilyDropTarget ? 'var(--teal)' : 'var(--text3)'
+      }
+    }, isFamilyDropTarget ? 'Drop to move here' : 'Drag a client or household here')), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        gap: 6,
+        flexWrap: 'wrap'
+      }
+    }, group.clients.map(ds => {
+      const stats = clientStatsFor(ds);
+      return /*#__PURE__*/React.createElement("span", {
+        key: ds.clientId,
+        style: {
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          maxWidth: isMobile ? '100%' : 320,
+          minWidth: 0,
+          fontSize: 10,
+          color: 'var(--text2)',
+          background: 'var(--bg)',
+          border: '1px solid var(--border)',
+          borderRadius: 999,
+          padding: '5px 9px'
+        }
+      }, /*#__PURE__*/React.createElement("strong", {
+        style: {
+          color: 'var(--text)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          minWidth: 0
+        }
+      }, resolveClientName(ds)), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: 'var(--text3)',
+          whiteSpace: 'nowrap'
+        }
+      }, ds.tier || UNASSIGNED_TIER), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: 'var(--gold)',
+          whiteSpace: 'nowrap'
+        }
+      }, stats.clientPols.length, " polic", stats.clientPols.length === 1 ? 'y' : 'ies'));
+    }))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'none',
         padding: '10px 14px',
         borderBottom: '1px solid rgba(255,255,255,.055)',
         background: 'rgba(0,0,0,.08)'
@@ -37490,17 +37719,24 @@ function ClientsTab() {
       bg: 'var(--gold-dim)',
       border: 'color-mix(in oklch, var(--gold) 28%, transparent)'
     } : tierStyle(c.id, tierDefinitions);
+    const tierDropActive = dragOverTier === c.id;
     return /*#__PURE__*/React.createElement("button", {
       key: c.id,
       onClick: () => setFilter(c.id),
+      onDragOver: e => handleTierDragOver(e, c.id),
+      onDragLeave: () => {
+        if (dragOverTier === c.id) setDragOverTier('');
+      },
+      onDrop: e => handleTierDrop(e, c.id),
+      title: c.id === 'all' ? undefined : 'Drop a client here to move tier',
       style: {
-        background: active ? tc.bg : 'transparent',
-        color: active ? tc.color : 'var(--text3)',
-        border: active ? '1px solid ' + tc.border : '1px solid var(--border)',
+        background: tierDropActive ? tc.bg : active ? tc.bg : 'transparent',
+        color: active || tierDropActive ? tc.color : 'var(--text3)',
+        border: tierDropActive ? '1px dashed ' + tc.color : active ? '1px solid ' + tc.border : '1px solid var(--border)',
         padding: '4px 10px',
         borderRadius: 6,
         fontSize: 10,
-        fontWeight: active ? 600 : 400,
+        fontWeight: active || tierDropActive ? 600 : 400,
         cursor: 'pointer'
       }
     }, c.label);
@@ -38106,6 +38342,9 @@ function ClientsTab() {
       return /*#__PURE__*/React.createElement("div", {
         key: ds.clientId,
         onClick: () => openClientView(ds.clientId, 'profile'),
+        draggable: !isMobile,
+        onDragStart: e => beginClientDrag(e, ds),
+        onDragEnd: endPolicyLensDrag,
         style: {
           background: isActive ? 'color-mix(in oklch, var(--gold) 9%, transparent)' : 'var(--bg2)',
           border: isActive ? '1px solid color-mix(in oklch, var(--gold) 56%, transparent)' : `1px solid ${T_V2.border}`,
@@ -38192,25 +38431,9 @@ function ClientsTab() {
         size: "sm",
         onTierChange: async newTier => {
           try {
-            await handleTierChange(ds.clientId, newTier, tierLabel, (cid, nt) => {
-              setAllStates(prev => prev.map(s => s.clientId === cid ? {
-                ...s,
-                tier: nt
-              } : s));
-              if (cid === activeClientId && driveState) {
-                setDriveState({
-                  ...driveState,
-                  tier: nt
-                });
-              }
+            await saveTierForClient(ds, newTier, {
+              silent: true
             });
-          } catch (_) {}
-          try {
-            window.dispatchEvent(new CustomEvent('policylens-trigger-drive-write', {
-              detail: {
-                clientId: ds.clientId
-              }
-            }));
           } catch (_) {}
         }
       }), /*#__PURE__*/React.createElement("button", {
@@ -38276,10 +38499,20 @@ function ClientsTab() {
       if (!isFiltered && tierClients.length === 0 && tier !== UNASSIGNED_TIER) return null;
       const ts = tierStyle(tier, tierDefinitions);
       const tierAccent = ts.color || T_V2.text3;
+      const isTierDropTarget = dragOverTier === tier;
       return /*#__PURE__*/React.createElement("div", {
         key: tier,
+        onDragOver: e => handleTierDragOver(e, tier),
+        onDragLeave: e => {
+          if (e.currentTarget === e.target) setDragOverTier('');
+        },
+        onDrop: e => handleTierDrop(e, tier),
         style: {
-          marginBottom: 24
+          marginBottom: 24,
+          borderRadius: T_V2.radius || 14,
+          outline: isTierDropTarget ? '2px dashed ' + tierAccent : '2px solid transparent',
+          outlineOffset: 4,
+          background: isTierDropTarget ? `color-mix(in oklch, ${tierAccent} 8%, transparent)` : 'transparent'
         }
       }, /*#__PURE__*/React.createElement("div", {
         style: {
@@ -38316,7 +38549,17 @@ function ClientsTab() {
           borderRadius: 999,
           fontFamily: T_V2.sansFamily
         }
-      }, tierClients.length), /*#__PURE__*/React.createElement("div", {
+      }, tierClients.length), isTierDropTarget && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10,
+          fontWeight: 700,
+          color: tierAccent,
+          background: 'var(--bg2)',
+          border: '1px solid var(--border)',
+          borderRadius: 999,
+          padding: '3px 8px'
+        }
+      }, "Drop to move here"), /*#__PURE__*/React.createElement("div", {
         style: {
           flex: 1,
           height: 1,
